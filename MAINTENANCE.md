@@ -288,10 +288,17 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   Slugify starts insensitive and is enabled/disabled by
   `_update_slugify_sensitivity()` (called from `update_status`): enabled only in
   edit mode when the active tab has a note whose live first line is a short H1.
-- Note list (pane 2): a `Gtk.Stack` (`notelist_stack`) with a "list" child (the
-  scrolled `Gtk.ListStore(str, str, float)` = display name, full path, mtime) and a
-  "placeholder" child shown when the Subfolders parent is selected. `_reload_notelist`
-  switches back to "list".
+- Note list (pane 2): a vertical box with a **search row** on top (a `Gtk.Entry`
+  with a clear icon + a "Search" `Gtk.Button`) above a `Gtk.Stack`
+  (`notelist_stack`). The stack has a "list" child (the scrolled
+  `Gtk.ListStore(str, str, float)` = display name, full path, mtime) and a
+  "placeholder" child shown when the Subfolders parent is selected.
+  `_reload_notelist` switches back to "list". Search filtering lives in
+  `_reload_notelist`: `self.search_query` (None = off) is matched
+  case-insensitively as a substring of each note's display name; an empty result
+  sets `self._search_no_results`, which `update_status` renders as "No search
+  results found!" instead of the item count. The filter persists across node
+  switches and reloads until the box is cleared.
 - Editor: a `Gtk.Notebook`; each page is an `EditorTab` (see §3.2a). `editor_font`
   themes the whole view; `code_font` themes code spans via the highlighter tags.
   Keep a single uniform size for body text — do not introduce size-varying tags.
@@ -305,6 +312,10 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   (and `current_subfolder` for a subfolder), then either reloads the note list
   (All Notes / Empty Notes / a subfolder) or shows the pane-2 + pane-3
   placeholders (the *Subfolders* parent). It does not disturb tab content.
+- Searching → `on_search` (Entry "activate"/Enter or the Search button) reads the
+  box, sets `search_query`, and reloads; `on_search_icon_press` (the clear icon)
+  empties the box and drops the filter. Search runs only on Enter/click, never per
+  keystroke.
 - Selecting a note (single click) → `on_note_selection_changed` checks the active
   tab for unsaved changes (cancelling restores the prior selection via
   `_reselect_active_note`), then `_load_note_in_active_tab` **replaces** the

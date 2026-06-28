@@ -51,6 +51,8 @@ class NotebookWindow(Gtk.Window):
         self.sort_mode = SORT_ALPHA
         self._note_select_guard = False   # suppress reselection feedback loops
         self.read_only = True             # (#1) start in read-only mode
+        self.search_query = None          # active note-list search (None = off)
+        self._search_no_results = False
 
         self._build_ui()
         # Start with one empty tab.
@@ -317,6 +319,39 @@ class NotebookWindow(Gtk.Window):
         return scroll
 
     def _build_notelist(self):
+        # Vertical box: a search row on top, then the list/placeholder stack.
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+        # --- search row ---
+        search_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        search_row.set_margin_start(4)
+        search_row.set_margin_end(4)
+        search_row.set_margin_top(4)
+        search_row.set_margin_bottom(4)
+
+        self.search_entry = Gtk.Entry()
+        self.search_entry.set_placeholder_text("Search notes\u2026")
+        self.search_entry.set_hexpand(True)
+        # Only search on ENTER (the "activate" signal), not on every keystroke.
+        self.search_entry.connect("activate", self.on_search)
+        # A clear icon inside the entry; clearing resets the filter.
+        self.search_entry.set_icon_from_icon_name(
+            Gtk.EntryIconPosition.SECONDARY, "edit-clear-symbolic")
+        self.search_entry.connect("icon-press", self.on_search_icon_press)
+        search_row.pack_start(self.search_entry, True, True, 0)
+
+        search_btn = Gtk.Button(label="Search")
+        search_btn.set_image(Gtk.Image.new_from_icon_name(
+            "edit-find", Gtk.IconSize.BUTTON))
+        search_btn.set_always_show_image(True)
+        search_btn.connect("clicked", self.on_search)
+        search_row.pack_start(search_btn, False, False, 0)
+
+        outer.pack_start(search_row, False, False, 0)
+
+        # The active search query (None means no filter).
+        self.search_query = None
+
         # A Stack: the scrolled note list, plus a placeholder shown when the
         # "Subfolders" parent node is selected.
         self.notelist_stack = Gtk.Stack()
@@ -344,7 +379,8 @@ class NotebookWindow(Gtk.Window):
         self.notelist_stack.add_named(
             self._make_placeholder("Select a folder or note"), "placeholder")
         self.notelist_stack.set_visible_child_name("list")
-        return self.notelist_stack
+        outer.pack_start(self.notelist_stack, True, True, 0)
+        return outer
 
     @staticmethod
     def _make_placeholder(text):
@@ -530,7 +566,11 @@ class NotebookWindow(Gtk.Window):
             sel = tab.note.display_name()
         else:
             sel = "none"
-        msg = f"{count} item(s)  |  Selected: {sel}"
+        # When a search returns nothing, replace the item count with a notice.
+        if self._search_no_results:
+            msg = f"No search results found!  |  Selected: {sel}"
+        else:
+            msg = f"{count} item(s)  |  Selected: {sel}"
         if tab and tab.dirty:
             msg += "  *"
         if len(self._tabs) > 1:
@@ -576,6 +616,9 @@ class NotebookWindow(Gtk.Window):
         self.root_folder = None
         self.current_node = NODE_ALL_NOTES
         self.current_subfolder = None
+        self.search_query = None
+        self._search_no_results = False
+        self.search_entry.set_text("")
         self.set_title(APP_NAME)
         self.sidebar_store.clear()
         self.note_store.clear()
@@ -590,6 +633,21 @@ class NotebookWindow(Gtk.Window):
 
     def on_toggle_statusbar(self, item):
         self.statusbar_box.set_visible(item.get_active())
+
+    # ------------------------------------------------------------ search -- #
+    def on_search(self, _widget):
+        """Run the search from the entry's current text (ENTER or button)."""
+        text = self.search_entry.get_text().strip()
+        # An empty box means no filter.
+        self.search_query = text or None
+        self._reload_notelist()
+
+    def on_search_icon_press(self, entry, icon_pos, _event):
+        """Clear icon pressed: empty the box and drop the filter."""
+        if icon_pos == Gtk.EntryIconPosition.SECONDARY:
+            entry.set_text("")
+            self.search_query = None
+            self._reload_notelist()
 
     def _reload_sidebar(self):
         self.sidebar_store.clear()
@@ -629,6 +687,16 @@ class NotebookWindow(Gtk.Window):
         self.note_store.clear()
         notes = model.sort_notes(
             self._notes_for_current_subfolder(), self.sort_mode)
+
+        # Apply the search filter, if any. Matching is case-insensitive against
+        # the note's display name. A blank/None query means no filtering.
+        query = (self.search_query or "").strip().lower()
+        if query:
+            notes = [n for n in notes if query in n.display_name().lower()]
+            self._search_no_results = (len(notes) == 0)
+        else:
+            self._search_no_results = False
+
         for n in notes:
             self.note_store.append([n.display_name(), n.path, n.mtime])
 

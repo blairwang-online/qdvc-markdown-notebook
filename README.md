@@ -8,7 +8,7 @@ It points at a folder of `.md` files and gives you:
 
 - **Left pane** — a tree: *All Notes*, *Empty Notes*, and *Subfolders* (with each
   immediate subfolder listed underneath).
-- **Middle pane** — the list of notes for the selected sidebar item.
+- **Middle pane** — a search box plus the list of notes for the selected sidebar item.
 - **Right pane** — a monospace editor with lightweight markdown syntax highlighting (no font-size variation).
 
 Plus a menu bar, toolbar (New / Save / Read-only / Slugify), and a status bar.
@@ -29,6 +29,14 @@ The left sidebar is a tree:
 - **Subfolders** — expands to each immediate subfolder; selecting a subfolder
   lists its notes. Selecting the *Subfolders* heading itself shows a placeholder
   in both the note list and the editor.
+
+## Search
+
+A search box sits at the top of the note list. Type a term and press **Enter**
+or click **Search** to filter the list to notes whose name matches (case-
+insensitive). Searching does not happen on every keystroke. Clearing the box (or
+pressing its clear icon) removes the filter. When a search matches nothing, the
+status bar shows *No search results found!* in place of the item count.
 
 ## Menus
 
