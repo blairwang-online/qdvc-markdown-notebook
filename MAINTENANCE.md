@@ -194,10 +194,11 @@ panel/taskbar can match the window to the `.desktop` file (its `StartupWMClass`)
 Menu items use `_icon_menu_item(label, icon_name)`, which builds a
 `Gtk.ImageMenuItem` (deprecated in GTK3 but the idiomatic MATE-era way to show
 icons in menus; it falls back to a plain `MenuItem`). Icons are stock freedesktop
-names: New=`document-new`, Save=`document-save`, Open Working Folder=`folder-open`,
-Open Recent=`document-open-recent`, New Tab=`tab-new`, Quit=`application-exit`,
-Preferences=`preferences-system`, About=`help-about`. Plain items (Close Tab, the
-sort radio items) intentionally have no icon, per HIG restraint.
+names: New note=`document-new`, Save note=`document-save`, Open
+workspace=`folder-open`, Open recent workspace=`document-open-recent`, New
+tab=`tab-new`, Quit=`application-exit`, Preferences=`preferences-system`,
+About=`help-about`. Plain items (Close workspace, Close tab, the View toggles, and
+the sort radio items) intentionally have no icon, per HIG restraint.
 
 Tab navigation (`_on_key_press`, connected to the window's `key-press-event`):
 Ctrl+Tab → `_cycle_tab(forward=True)`, Ctrl+Shift+Tab → backward (GTK sends
@@ -243,15 +244,20 @@ gated on it: New note shows a notice and aborts, and Slugify is desensitised in
 `_update_slugify_sensitivity`. Saving is left allowed (a read-only buffer cannot
 have changed, so it is harmless).
 
-Menus: **File** (New, Save, Open Working Folder, Open Recent, New Tab, Close Tab,
-Quit), **View** (the three sort modes — font items were removed), **Edit**
-(Preferences), **Help** (About). `on_preferences` opens the `PreferencesDialog`
-with `_apply_preferences` as its callback; `on_about` shows a `Gtk.AboutDialog`.
+Menus (order **File, Edit, View, Help**): **File** (New note, Save note, Open
+workspace, Close workspace, Open recent workspace, New tab, Close tab, Quit, with
+two separators per the layout), **Edit** (Preferences), **View** (Toolbar and
+Statusbar `Gtk.CheckMenuItem` toggles, a separator, then the three sort
+`RadioMenuItem`s), **Help** (About). `on_close_workspace` resets to the empty
+initial state (after `_confirm_close_all`); `on_toggle_toolbar` /
+`on_toggle_statusbar` flip `self.toolbar` / `self.statusbar_box` visibility (both
+checks default on). `on_preferences` opens the `PreferencesDialog`; `on_about`
+shows a `Gtk.AboutDialog`.
 
 Settings wiring: `__init__` calls `Settings.load()`, then after `_build_ui()`
 calls `_apply_editor_font()`, `_apply_code_font()`, and `_rebuild_recent_menu()`.
 `open_folder()` calls `_remember_folder()` (which records, saves, and refreshes
-the Open Recent menu). Font and toolbar-style changes now flow through the
+the recent-workspace menu). Font and toolbar-style changes now flow through the
 Preferences dialog, whose `on_apply` callback (`_apply_preferences`) re-applies
 the editor font, code font, and toolbar style to the live UI. `_apply_editor_font`
 and `_apply_code_font` iterate **all** tabs; `_apply_toolbar_style` maps
@@ -332,6 +338,12 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   changes preview via `_apply_preferences`, Save persists, Cancel reverts.
 - About → `on_about` shows a `Gtk.AboutDialog`.
 - Quit / window close → `_confirm_close_all` prompts for each dirty tab.
+- Close workspace → `on_close_workspace` (after `_confirm_close_all`) clears the
+  sidebar, note list, and tabs, and drops `root_folder`, returning to the empty
+  initial state.
+- Toggle Toolbar / Statusbar (View menu) → `on_toggle_toolbar` /
+  `on_toggle_statusbar` set the visibility of `self.toolbar` / `self.statusbar_box`
+  from the `Gtk.CheckMenuItem` state.
 
 ## 5. Known deviations from the original spec
 

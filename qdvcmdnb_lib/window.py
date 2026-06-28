@@ -101,44 +101,48 @@ class NotebookWindow(Gtk.Window):
         file_item = Gtk.MenuItem(label="File")
         file_item.set_submenu(file_menu)
 
-        mi_new = self._icon_menu_item("New", "document-new")
+        mi_new = self._icon_menu_item("New note", "document-new")
         mi_new.add_accelerator("activate", accel, Gdk.KEY_n,
                                Gdk.ModifierType.CONTROL_MASK,
                                Gtk.AccelFlags.VISIBLE)
         mi_new.connect("activate", self.on_new_note)
         file_menu.append(mi_new)
 
-        mi_save = self._icon_menu_item("Save", "document-save")
+        mi_save = self._icon_menu_item("Save note", "document-save")
         mi_save.add_accelerator("activate", accel, Gdk.KEY_s,
                                 Gdk.ModifierType.CONTROL_MASK,
                                 Gtk.AccelFlags.VISIBLE)
         mi_save.connect("activate", self.on_save_note)
         file_menu.append(mi_save)
 
-        mi_open = self._icon_menu_item("Open Working Folder", "folder-open")
+        mi_open = self._icon_menu_item("Open workspace", "folder-open")
         mi_open.add_accelerator("activate", accel, Gdk.KEY_o,
                                 Gdk.ModifierType.CONTROL_MASK,
                                 Gtk.AccelFlags.VISIBLE)
         mi_open.connect("activate", self.on_open_folder)
         file_menu.append(mi_open)
 
-        # "Open Recent" submenu, populated dynamically from settings.
+        mi_close_ws = Gtk.MenuItem(label="Close workspace")
+        mi_close_ws.connect("activate", self.on_close_workspace)
+        file_menu.append(mi_close_ws)
+
+        # "Open recent workspace" submenu, populated dynamically from settings.
         self.recent_menu_item = self._icon_menu_item(
-            "Open Recent", "document-open-recent")
+            "Open recent workspace", "document-open-recent")
         self.recent_menu = Gtk.Menu()
         self.recent_menu_item.set_submenu(self.recent_menu)
         file_menu.append(self.recent_menu_item)
 
         file_menu.append(Gtk.SeparatorMenuItem())
 
-        mi_new_tab = self._icon_menu_item("New Tab", "tab-new")
+        mi_new_tab = self._icon_menu_item("New tab", "tab-new")
         mi_new_tab.add_accelerator("activate", accel, Gdk.KEY_t,
                                    Gdk.ModifierType.CONTROL_MASK,
                                    Gtk.AccelFlags.VISIBLE)
         mi_new_tab.connect("activate", self.on_new_tab)
         file_menu.append(mi_new_tab)
 
-        mi_close_tab = Gtk.MenuItem(label="Close Tab")
+        mi_close_tab = Gtk.MenuItem(label="Close tab")
         mi_close_tab.add_accelerator("activate", accel, Gdk.KEY_w,
                                      Gdk.ModifierType.CONTROL_MASK,
                                      Gtk.AccelFlags.VISIBLE)
@@ -158,10 +162,33 @@ class NotebookWindow(Gtk.Window):
 
         menubar.append(file_item)
 
+        # ---- Edit menu ----
+        edit_menu = Gtk.Menu()
+        edit_item = Gtk.MenuItem(label="Edit")
+        edit_item.set_submenu(edit_menu)
+
+        mi_prefs = self._icon_menu_item("Preferences\u2026", "preferences-system")
+        mi_prefs.connect("activate", self.on_preferences)
+        edit_menu.append(mi_prefs)
+
+        menubar.append(edit_item)
+
         # ---- View menu ----
         view_menu = Gtk.Menu()
         view_item = Gtk.MenuItem(label="View")
         view_item.set_submenu(view_menu)
+
+        self.mi_toolbar = Gtk.CheckMenuItem(label="Toolbar")
+        self.mi_toolbar.set_active(True)
+        self.mi_toolbar.connect("toggled", self.on_toggle_toolbar)
+        view_menu.append(self.mi_toolbar)
+
+        self.mi_statusbar = Gtk.CheckMenuItem(label="Statusbar")
+        self.mi_statusbar.set_active(True)
+        self.mi_statusbar.connect("toggled", self.on_toggle_statusbar)
+        view_menu.append(self.mi_statusbar)
+
+        view_menu.append(Gtk.SeparatorMenuItem())
 
         mi_alpha = Gtk.RadioMenuItem(label="Sort: Alphabetical", group=None)
         mi_alpha.set_active(True)
@@ -179,17 +206,6 @@ class NotebookWindow(Gtk.Window):
         view_menu.append(mi_old_first)
 
         menubar.append(view_item)
-
-        # ---- Edit menu ----
-        edit_menu = Gtk.Menu()
-        edit_item = Gtk.MenuItem(label="Edit")
-        edit_item.set_submenu(edit_menu)
-
-        mi_prefs = self._icon_menu_item("Preferences\u2026", "preferences-system")
-        mi_prefs.connect("activate", self.on_preferences)
-        edit_menu.append(mi_prefs)
-
-        menubar.append(edit_item)
 
         # ---- Help menu ----
         help_menu = Gtk.Menu()
@@ -362,6 +378,7 @@ class NotebookWindow(Gtk.Window):
         # A horizontal strip: a bold mode indicator (#1) on the left, then the
         # regular statusbar filling the rest.
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.statusbar_box = box
         self.mode_label = Gtk.Label()
         self.mode_label.set_margin_start(6)
         self.mode_label.set_margin_end(6)
@@ -551,6 +568,28 @@ class NotebookWindow(Gtk.Window):
             tab.clear()
         self.update_status()
         self._remember_folder(folder)
+
+    def on_close_workspace(self, _widget):
+        """Close the current workspace, returning to the empty initial state."""
+        if self._confirm_close_all() is False:
+            return
+        self.root_folder = None
+        self.current_node = NODE_ALL_NOTES
+        self.current_subfolder = None
+        self.set_title(APP_NAME)
+        self.sidebar_store.clear()
+        self.note_store.clear()
+        self.notelist_stack.set_visible_child_name("list")
+        for tab in self._tabs:
+            tab.clear()
+        self.update_status()
+
+    # ------------------------------------------------------- view toggles -- #
+    def on_toggle_toolbar(self, item):
+        self.toolbar.set_visible(item.get_active())
+
+    def on_toggle_statusbar(self, item):
+        self.statusbar_box.set_visible(item.get_active())
 
     def _reload_sidebar(self):
         self.sidebar_store.clear()

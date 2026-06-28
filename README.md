@@ -30,6 +30,15 @@ The left sidebar is a tree:
   lists its notes. Selecting the *Subfolders* heading itself shows a placeholder
   in both the note list and the editor.
 
+## Menus
+
+- **File** — New note, Save note, Open workspace, Close workspace, Open recent
+  workspace, New tab, Close tab, Quit.
+- **Edit** — Preferences.
+- **View** — show/hide the Toolbar and Statusbar, and choose the note sort order.
+- **Help** — About.
+
+
 
 ## Usage
 
@@ -109,7 +118,7 @@ Open *Edit → Preferences* to configure:
 
 These are stored in a plain, git-trackable YAML file at
 `~/.config/qdvcmdnb/config.yml` (or under `$XDG_CONFIG_HOME`), along with your
-list of recent working folders (reopen them from *File → Open Recent*).
+list of recent workspaces (reopen them from *File → Open recent workspace*).
 
 ## Tabs
 
@@ -140,7 +149,7 @@ becomes `my-awesome-new-note.md`.
 | --------------------- | ----------------- |
 | New note              | Ctrl+N            |
 | Save note             | Ctrl+S            |
-| Open working folder   | Ctrl+O            |
+| Open workspace        | Ctrl+O            |
 | New tab               | Ctrl+T            |
 | Close tab             | Ctrl+W            |
 | Next / previous tab   | Ctrl+Tab / Ctrl+Shift+Tab |
