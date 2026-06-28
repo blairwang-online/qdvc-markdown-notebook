@@ -55,7 +55,9 @@ The toolbar's **Card view** toggle (off by default) changes how the note list
 shows each note. Instead of just the title, each entry becomes a small card: the
 title in **bold**, then the last-modified date and the first line of body text
 (the first non-blank line after the note's heading) in a smaller, regular-weight
-font. Toggle it off to return to the plain title list.
+font. A thin separator line is drawn between cards, and the date/first-line of the
+selected card lighten slightly so they stay readable on the selection highlight.
+Toggle it off to return to the plain title list.
 
 ## Menus
 

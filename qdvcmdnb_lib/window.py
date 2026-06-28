@@ -269,14 +269,37 @@ class NotebookWindow(Gtk.Window):
         self.btn_save = Gtk.ToolButton(icon_name="document-save")
         self.btn_save.set_label("Save note")
         self.btn_save.set_tooltip_text("Save the current note")
-        self.btn_save.set_sensitive(False)  # (#4) enabled only when dirty
+        self.btn_save.set_sensitive(False)  # enabled only when dirty
         self.btn_save.connect("clicked", self.on_save_note)
         toolbar.insert(self.btn_save, -1)
 
+        # Slugify: rename the active note from its level-1 heading. Enabled only
+        # when the active tab's first line is a short (<32 char) H1.
+        self.btn_slugify = Gtk.ToolButton(icon_name="insert-link")
+        self.btn_slugify.set_label("Slugify")
+        self.btn_slugify.set_tooltip_text(
+            "Rename this note from its level-1 heading")
+        self.btn_slugify.set_sensitive(False)
+        self.btn_slugify.connect("clicked", self.on_slugify)
+        toolbar.insert(self.btn_slugify, -1)
+
         toolbar.insert(Gtk.SeparatorToolItem(), -1)
 
-        # Read-only toggle (#1). Pressed-in (active) means read-only; releasing
-        # it enters edit mode. Applies across all tabs.
+        # Card view toggle: when active, pane 2 shows each note as a small card
+        # (bold title + date + first body line). Off by default.
+        self.btn_cardview = Gtk.ToggleToolButton()
+        self.btn_cardview.set_icon_name("mail-attachment")
+        self.btn_cardview.set_label("Card view")
+        self.btn_cardview.set_tooltip_text(
+            "Show notes as cards (title, date, first line)")
+        self.btn_cardview.set_active(False)
+        self.btn_cardview.connect("toggled", self.on_toggle_card_view)
+        toolbar.insert(self.btn_cardview, -1)
+
+        toolbar.insert(Gtk.SeparatorToolItem(), -1)
+
+        # Read-only toggle. Pressed-in (active) means read-only; releasing it
+        # enters edit mode. Applies across all tabs.
         self.btn_readonly = Gtk.ToggleToolButton()
         self.btn_readonly.set_icon_name("changes-prevent-symbolic")
         self.btn_readonly.set_label("Read-only")
@@ -297,31 +320,6 @@ class NotebookWindow(Gtk.Window):
         self.btn_preview.set_active(False)
         self.btn_preview.connect("toggled", self.on_toggle_preview)
         toolbar.insert(self.btn_preview, -1)
-
-        toolbar.insert(Gtk.SeparatorToolItem(), -1)
-
-        # Slugify: rename the active note from its level-1 heading. Enabled only
-        # when the active tab's first line is a short (<32 char) H1.
-        self.btn_slugify = Gtk.ToolButton(icon_name="insert-link")
-        self.btn_slugify.set_label("Slugify")
-        self.btn_slugify.set_tooltip_text(
-            "Rename this note from its level-1 heading")
-        self.btn_slugify.set_sensitive(False)
-        self.btn_slugify.connect("clicked", self.on_slugify)
-        toolbar.insert(self.btn_slugify, -1)
-
-        toolbar.insert(Gtk.SeparatorToolItem(), -1)
-
-        # Card view toggle: when active, pane 2 shows each note as a small card
-        # (bold title + date + first body line). Off by default.
-        self.btn_cardview = Gtk.ToggleToolButton()
-        self.btn_cardview.set_icon_name("view-list-details-symbolic")
-        self.btn_cardview.set_label("Card view")
-        self.btn_cardview.set_tooltip_text(
-            "Show notes as cards (title, date, first line)")
-        self.btn_cardview.set_active(False)
-        self.btn_cardview.connect("toggled", self.on_toggle_card_view)
-        toolbar.insert(self.btn_cardview, -1)
 
         return toolbar
 
@@ -395,15 +393,17 @@ class NotebookWindow(Gtk.Window):
         scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
 
         # Columns: display name (str), full path (str), mtime (float),
-        #          markup (str — what the cell renders; plain title in list view,
-        #          a three-line block in card view)
+        #          first-body-line snippet (str). The visible markup is built at
+        #          draw time by a cell-data-func so it can depend on selection
+        #          state (the card sub-lines lighten when the row is selected).
         self.note_store = Gtk.ListStore(str, str, float, str)
         self.note_view = Gtk.TreeView(model=self.note_store)
         self.note_view.set_headers_visible(False)
 
         renderer = Gtk.CellRendererText()
         renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
-        col = Gtk.TreeViewColumn("Notes", renderer, markup=3)
+        col = Gtk.TreeViewColumn("Notes", renderer)
+        col.set_cell_data_func(renderer, self._note_cell_data)
         self.note_view.append_column(col)
 
         self.note_view.get_selection().connect(
@@ -511,10 +511,17 @@ class NotebookWindow(Gtk.Window):
     # ------------------------------------------------------- card view -- #
     def on_toggle_card_view(self, button):
         self.card_view = button.get_active()
+        self._apply_card_view()
         # Re-render the note list, keeping the current selection.
         tab = self._active_tab()
         keep = tab.note.path if (tab and tab.note) else None
         self._reload_notelist(select_path=keep)
+
+    def _apply_card_view(self):
+        """Show thin horizontal separator lines between cards in card view."""
+        lines = (Gtk.TreeViewGridLines.HORIZONTAL if self.card_view
+                 else Gtk.TreeViewGridLines.NONE)
+        self.note_view.set_grid_lines(lines)
 
     # --------------------------------------------------------------- tabs -- #
     def _active_tab(self):
@@ -791,7 +798,8 @@ class NotebookWindow(Gtk.Window):
 
         for n in notes:
             self.note_store.append(
-                [n.display_name(), n.path, n.mtime, self._note_markup(n)])
+                [n.display_name(), n.path, n.mtime,
+                 model.first_body_line(n)])
 
         if select_path:
             # Re-select a specific note by its file path after reload.
@@ -801,23 +809,31 @@ class NotebookWindow(Gtk.Window):
                     break
         self.update_status()
 
-    def _note_markup(self, note):
+    def _note_cell_data(self, _col, cell, store, treeiter, _data):
         """
-        Pango markup for one note row. In list view it's just the (bold-free)
-        title. In card view it's three lines: bold title, then the last-modified
-        date and the first body line in a smaller, regular-weight font.
+        Build the cell markup at draw time. In list view it's just the title.
+        In card view it's three lines: bold title, then the last-modified date
+        and the first body line in a smaller font. Those sub-lines use a lighter
+        grey when the row is selected (so they stay legible on the selection
+        highlight) and a darker grey otherwise.
         """
-        title = _xml_escape(note.display_name())
+        title = _xml_escape(store[treeiter][0])
         if not self.card_view:
-            return title
-        date = _xml_escape(model.format_mtime(note))
-        snippet = _xml_escape(model.first_body_line(note))
-        # Smaller, grey second/third lines; blank lines are simply omitted text.
-        sub = (f"\n<span size='small' foreground='#666666'>{date}</span>"
+            cell.set_property("markup", title)
+            return
+
+        mtime = store[treeiter][2]
+        date = _xml_escape(model.format_mtime_value(mtime))
+        snippet = _xml_escape(store[treeiter][3])
+
+        selected = self.note_view.get_selection().iter_is_selected(treeiter)
+        grey = "#aaaaaa" if selected else "#666666"
+
+        sub = (f"\n<span size='small' foreground='{grey}'>{date}</span>"
                if date else "")
-        sub += (f"\n<span size='small' foreground='#666666'>{snippet}</span>"
+        sub += (f"\n<span size='small' foreground='{grey}'>{snippet}</span>"
                 if snippet else "")
-        return f"<b>{title}</b>{sub}"
+        cell.set_property("markup", f"<b>{title}</b>{sub}")
 
     # ----------------------------------------------------------- editor -- #
     def _load_note_in_active_tab(self, note):

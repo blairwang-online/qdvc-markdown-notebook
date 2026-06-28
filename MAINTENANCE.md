@@ -154,9 +154,10 @@ enough" philosophy as the highlighter), not a full CommonMark parser.
   are not atomic (see §6).
 - Card-view helpers: `first_body_line(note)` returns the first non-blank line
   after a leading heading (skips one `#`..`######` line; if no heading, the first
-  non-blank line), or `""` on empty/unreadable; `format_mtime(note)` formats the
-  note's mtime as `YYYY-MM-DD HH:MM` (or `""` if unknown). Both feed the window's
-  `_note_markup`.
+  non-blank line), or `""` on empty/unreadable; `format_mtime_value(mtime)` formats
+  a raw mtime float as `YYYY-MM-DD HH:MM` (or `""` if 0), and `format_mtime(note)`
+  delegates to it. The window's cell-data-func uses the float form (it only has the
+  store's mtime column at draw time).
 - Slug/rename (for the Slugify toolbar button): `heading_for_slug(text)` returns
   the level-1 heading content if `text`'s first line is `# …` and the heading is
   **< 32** chars (`SLUG_MAX_HEADING_LEN`), else `None`. `slugify(heading)` lowers
@@ -340,36 +341,40 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   branch open. `on_sidebar_selection_changed` switches on the node kind (column 2):
   All/Empty/subfolder reload the list; the Subfolders **parent** shows placeholders
   in both panes (`_show_notelist_placeholder` + `tab.clear()`).
-- Toolbar: built in `_build_toolbar`, style from `_toolbar_style_enum()`. Buttons:
-  New note, **Save note** (`btn_save`, `document-save`; starts insensitive and is
-  enabled only when the active tab is dirty — `_update_save_sensitivity()`, called
-  from `update_status`), the **Read-only** toggle (`btn_readonly`, a
-  `Gtk.ToggleToolButton`, active by default), the **Preview** toggle (`btn_preview`,
-  `document-page-setup` icon, off by default; locks the Read-only toggle while
-  active), and **Slugify** (`btn_slugify`). Slugify starts insensitive and is
-  enabled/disabled by `_update_slugify_sensitivity()` (called from `update_status`):
-  enabled only in edit mode when the active tab has a note whose live first line is
-  a short H1. Last, the **Card view** toggle (`btn_cardview`, off by default)
-  switches the note list between plain titles and three-line cards
-  (`on_toggle_card_view` flips `self.card_view` and reloads, keeping selection).
+- Toolbar: built in `_build_toolbar`, style from `_toolbar_style_enum()`. Order:
+  **New note**, **Save note** (`btn_save`, `document-save`; starts insensitive and
+  is enabled only when the active tab is dirty — `_update_save_sensitivity()`,
+  called from `update_status`), **Slugify** (`btn_slugify`, insensitive unless the
+  active tab's live first line is a short H1 in edit mode, per
+  `_update_slugify_sensitivity()`), `|` separator, **Card view** (`btn_cardview`,
+  `mail-attachment` icon, off by default — `on_toggle_card_view` flips
+  `self.card_view`, calls `_apply_card_view()`, and reloads keeping selection), `|`
+  separator, **Read-only** (`btn_readonly`, active by default), **Preview**
+  (`btn_preview`, `document-page-setup` icon, off by default; locks the Read-only
+  toggle while active).
 - Note list (pane 2): a vertical box with a **search row** on top (a `Gtk.Entry`
   with a clear icon + a "Search" `Gtk.Button`) above a `Gtk.Stack`
   (`notelist_stack`). The stack has a "list" child (the scrolled
-  `Gtk.ListStore(str, str, float, str)` = display name, full path, mtime, **markup**)
-  and a "placeholder" child shown when the Subfolders parent is selected. The single
-  cell renderer binds to the **markup** column (#4); `_note_markup(note)` builds it:
-  in list view just the escaped title, in card view a `<b>`-titled block plus the
-  date and `first_body_line` in a small grey font. `_reload_notelist` switches back
-  to "list". Search filtering lives in `_reload_notelist`: `self.search_query`
-  (None = off) is passed to `model.filter_notes`, which matches case-insensitively
-  against each note's name **and its full contents**; an empty result sets
-  `self._search_no_results`, which `update_status` renders as "No search results
-  found!" instead of the item count. The filter persists across node switches and
-  reloads until the box is cleared. (Content search reads every candidate file per
-  search — fine for typical note collections; for very large trees, consider an
-  index or a background thread — see §7.) Beyond filtering the list, `on_search` /
-  `on_search_icon_press` call `_apply_search_highlight()`, which tells the active
-  tab to highlight the term (or clear it); the current query is also pushed to a
+  `Gtk.ListStore(str, str, float, str)` = display name, full path, mtime,
+  first-body-line snippet) and a "placeholder" child shown when the Subfolders
+  parent is selected. The single cell renderer uses a **cell-data-func**
+  (`_note_cell_data`) rather than a static column, so the markup can depend on
+  selection state: list view shows the escaped title; card view shows a `<b>`-titled
+  block plus the date (`model.format_mtime_value`) and snippet in a small grey font,
+  with the sub-lines lightened (`#aaaaaa` vs `#666666`) when the row is selected so
+  they stay legible on the highlight. `_apply_card_view()` toggles
+  `set_grid_lines(HORIZONTAL/NONE)` so a thin separator line appears between cards
+  only in card view. `_reload_notelist` switches the stack back to "list". Search
+  filtering lives in `_reload_notelist`: `self.search_query` (None = off) is passed
+  to `model.filter_notes`, which matches case-insensitively against each note's name
+  **and its full contents**; an empty result sets `self._search_no_results`, which
+  `update_status` renders as "No search results found!" instead of the item count.
+  The filter persists across node switches and reloads until the box is cleared.
+  (Content search reads every candidate file per search — fine for typical note
+  collections; for very large trees, consider an index or a background thread — see
+  §7.) Beyond filtering the list, `on_search` / `on_search_icon_press` call
+  `_apply_search_highlight()`, which tells the active tab to highlight the term (or
+  clear it); the current query is also pushed to a
   tab when a note loads into it and on tab switch, so the highlight follows.
 - Editor: a `Gtk.Notebook`; each page is an `EditorTab` (see §3.2a). `editor_font`
   themes the whole view; `code_font` themes code spans via the highlighter tags;
@@ -455,10 +460,11 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   shows lag on large files, scope it to the edited line range.
 - File writes are not atomic. A crash mid-write could truncate a note. If
   robustness matters, write to a temp file and `os.replace`.
-- The note-list cell renders the **markup** column, so any dynamic text in a card
-  (title, date, first body line) must be XML-escaped — `_note_markup` uses
-  `xml.sax.saxutils.escape`. Unescaped `<`/`&` from note content would otherwise
-  break rendering.
+- The note-list cell uses a **cell-data-func** (`_note_cell_data`) that emits Pango
+  markup, so any dynamic text in a card (title, date, first body line) must be
+  XML-escaped — it uses `xml.sax.saxutils.escape`. Unescaped `<`/`&` from note
+  content would otherwise break rendering. The func also reads selection state to
+  pick the sub-line grey, so it re-runs on selection changes (GTK redraws the row).
 - Initial keyboard focus is set to the sidebar (`set_focus(self.sidebar_view)`)
   so the first toolbar button doesn't show a focus ring on startup.
 

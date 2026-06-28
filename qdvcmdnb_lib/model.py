@@ -165,11 +165,16 @@ def first_body_line(note):
     return ""
 
 
+def format_mtime_value(mtime):
+    """Human-readable date for a raw mtime float (for card view)."""
+    if not mtime:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime))
+
+
 def format_mtime(note):
     """Human-readable last-modified date for `note` (for card view)."""
-    if not note.mtime:
-        return ""
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(note.mtime))
+    return format_mtime_value(note.mtime)
 
 
 def write_note(note, content):
