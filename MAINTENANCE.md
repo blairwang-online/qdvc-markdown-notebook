@@ -59,8 +59,11 @@ Five logical parts, one per module:
 
 ### 3.0 `config.py`
 Plain constants only — `APP_NAME`, `MARKDOWN_EXTENSIONS`, the `SORT_*` mode
-strings, and the `ALL_NOTES` sentinel. No GTK, no I/O, so it is safe to import
-from anywhere. `ALL_NOTES` is an `object()`; compare with `is`, never `==`.
+strings, the `ALL_NOTES` sentinel, and the sidebar `NODE_*` kind strings
+(`NODE_ALL_NOTES`, `NODE_EMPTY_NOTES`, `NODE_SUBFOLDERS`, `NODE_SUBFOLDER`). No
+GTK, no I/O, so it is safe to import from anywhere. `ALL_NOTES` is an `object()`;
+compare with `is`, never `==`. (`ALL_NOTES` predates the tree sidebar; the sidebar
+now uses the `NODE_*` kinds instead.)
 
 ### 3.0a `settings.py` — persistent user settings (no GTK)
 - Stores settings as YAML at `$XDG_CONFIG_HOME/qdvcmdnb/config.yml`, falling back
@@ -116,6 +119,9 @@ from anywhere. `ALL_NOTES` is an `object()`; compare with `is`, never `==`.
   parent subfolder" rule: selecting a top-level subfolder shows everything under
   it recursively.
 - `immediate_subfolders(root)` — only **one** level down, hidden dirs excluded.
+- `note_is_empty(note)` / `collect_empty_notes(folder)` — for the sidebar's
+  *Empty Notes* node. A note is "empty" if its content `.strip()`s to `""`.
+  Unreadable files are treated as not-empty (so they aren't silently hidden).
 - `sort_notes(notes, sort_mode)` — returns a new sorted list per the `SORT_*`
   mode. (Moved out of the window during the refactor so sorting is testable.)
 - Disk I/O: `read_note`, `write_note`, `unique_note_path`, `create_empty_note`.
@@ -154,8 +160,9 @@ window. Each `EditorTab` owns its own `Gtk.TextView`, `Gtk.TextBuffer`,
   a programmatic load) and `on_close(tab)` (close button clicked).
 - API: `load_note(note)` → bool, `save()` → bool (both return False on I/O error
   and leave the dialog to the caller), `clear()`, `get_content()`,
-  `apply_font(str)`, `apply_code_font(str)`, `title_text()`. The constructor
-  takes `code_font` and forwards it to the highlighter.
+  `apply_font(str)`, `apply_code_font(str)`, `set_editable(bool)` (read-only mode;
+  toggles `TextView.set_editable`/`set_cursor_visible`), `title_text()`. The
+  constructor takes `code_font` and forwards it to the highlighter.
 - The dirty marker is a leading `*` on the tab title, refreshed by
   `_refresh_title()`.
 - `_loading` guards the buffer `changed` signal during programmatic text sets,
@@ -201,8 +208,10 @@ focus navigation.
 
 Key state attributes:
 - `root_folder` — absolute path of the open data folder, or `None`.
-- `current_subfolder` — either the sentinel `ALL_NOTES` or a subfolder **name**
-  (relative to `root_folder`).
+- `current_node` — the selected sidebar node kind (a `NODE_*` constant).
+- `current_subfolder` — the subfolder **name** when `current_node` is
+  `NODE_SUBFOLDER`, else `None`.
+- `read_only` — whether editing is disabled across all tabs (starts `True`).
 - `_tabs` — list of `EditorTab`, parallel to notebook pages.
 - `sort_mode` — one of `SORT_ALPHA`, `SORT_DATE_NEW`, `SORT_DATE_OLD`.
 - `_note_select_guard` — suppresses the note-list `changed` handler while the
@@ -225,6 +234,14 @@ Tab wiring:
   with "Open in new tab", "Copy full path", and "Show in file browser".
 - Quitting/closing the window runs `_confirm_close_all`, which prompts for *every*
   dirty tab before exit.
+
+Read-only mode (toolbar toggle, default on): `self.read_only` is the single source
+of truth, applied by `_apply_read_only()` which calls `tab.set_editable(...)` on
+every tab and refreshes the status bar. `_new_tab` seeds new tabs from it.
+`on_toggle_read_only` flips it from the `Gtk.ToggleToolButton`. Edit actions are
+gated on it: New note shows a notice and aborts, and Slugify is desensitised in
+`_update_slugify_sensitivity`. Saving is left allowed (a read-only buffer cannot
+have changed, so it is harmless).
 
 Menus: **File** (New, Save, Open Working Folder, Open Recent, New Tab, Close Tab,
 Quit), **View** (the three sort modes — font items were removed), **Edit**
@@ -250,30 +267,38 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 - Layout: `vbox` → menubar, toolbar, then nested `Gtk.Paned`
   (`outer` horizontal holds sidebar + `inner`; `inner` holds note list + editor),
   then statusbar. Pane positions set with `set_position`.
-- Sidebar: `Gtk.TreeStore(str, str, str, bool)` = (icon-name, label,
-  subfolder-name, is_all). The column packs a `CellRendererPixbuf` (icon-name
-  attribute → column 0) before the text renderer (→ column 1). Icons are
-  freedesktop names: `emblem-documents` for All Notes, `folder` for subfolders.
-  **Beware the index shift:** `is_all` is column **3**, subfolder name column
-  **2** (they were 2 and 1 before the icon column was added) — selection handlers
-  read those indices.
+- Sidebar: `Gtk.TreeStore(str, str, str, str)` = (icon-name, label, node-kind,
+  subfolder-name). A `CellRendererPixbuf` (icon-name → column 0) precedes the text
+  renderer (label → column 1). Built by `_reload_sidebar` as a **tree**: top-level
+  rows for *All Notes* (`emblem-documents`), *Empty Notes* (`edit-clear`), and
+  *Subfolders* (`folder`); each immediate subfolder is a child of the Subfolders
+  row (`NODE_SUBFOLDER`, label and column-3 = its name). `expand_all()` keeps the
+  branch open. `on_sidebar_selection_changed` switches on the node kind (column 2):
+  All/Empty/subfolder reload the list; the Subfolders **parent** shows placeholders
+  in both panes (`_show_notelist_placeholder` + `tab.clear()`).
 - Toolbar: built in `_build_toolbar`, style from `_toolbar_style_enum()`. Buttons:
-  New note, Save note, and **Slugify** (`btn_slugify`). Slugify starts insensitive
-  and is enabled/disabled by `_update_slugify_sensitivity()` (called from
-  `update_status`, so it re-evaluates on edits, tab switches, and loads): enabled
-  only when the active tab has a note and its live first line is a short H1 that
-  yields a non-empty slug. `on_slugify` renames via `model.rename_note`, refreshes
-  the tab title, and reloads the list selecting the new path.
-- Note list: `Gtk.ListStore(str, str, float)` = (display name, full path, mtime).
+  New note, Save note, the **Read-only** toggle (`btn_readonly`, a
+  `Gtk.ToggleToolButton`, active by default), and **Slugify** (`btn_slugify`).
+  Slugify starts insensitive and is enabled/disabled by
+  `_update_slugify_sensitivity()` (called from `update_status`): enabled only in
+  edit mode when the active tab has a note whose live first line is a short H1.
+- Note list (pane 2): a `Gtk.Stack` (`notelist_stack`) with a "list" child (the
+  scrolled `Gtk.ListStore(str, str, float)` = display name, full path, mtime) and a
+  "placeholder" child shown when the Subfolders parent is selected. `_reload_notelist`
+  switches back to "list".
 - Editor: a `Gtk.Notebook`; each page is an `EditorTab` (see §3.2a). `editor_font`
   themes the whole view; `code_font` themes code spans via the highlighter tags.
   Keep a single uniform size for body text — do not introduce size-varying tags.
+- Status bar (pane footer): a horizontal box with a bold `mode_label` (Read-only /
+  Edit mode) on the left and the regular `Gtk.Statusbar` filling the rest;
+  `update_status` sets both.
 
 ## 4. Control flow
 
-- Selecting a sidebar row → `on_sidebar_selection_changed` sets
-  `current_subfolder` and reloads the note list. (It no longer clears the editor;
-  tabs keep their own content.)
+- Selecting a sidebar row → `on_sidebar_selection_changed` sets `current_node`
+  (and `current_subfolder` for a subfolder), then either reloads the note list
+  (All Notes / Empty Notes / a subfolder) or shows the pane-2 + pane-3
+  placeholders (the *Subfolders* parent). It does not disturb tab content.
 - Selecting a note (single click) → `on_note_selection_changed` checks the active
   tab for unsaved changes (cancelling restores the prior selection via
   `_reselect_active_note`), then `_load_note_in_active_tab` **replaces** the
@@ -286,13 +311,15 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 - Typing → the tab's own `_buffer_changed` sets its `dirty` flag, re-highlights,
   updates the tab title, and calls back to the window (`_on_tab_changed` →
   `update_status`, which also re-evaluates Slugify sensitivity).
-- New note → `on_new_note` writes an empty file into the current subfolder (or
-  root if All Notes is selected) via `model.create_empty_note`, reloads the list,
-  and opens it in the active tab.
+- Toggle read-only → `on_toggle_read_only` → `_apply_read_only` flips editability
+  on all tabs and updates the bold status indicator.
+- New note → `on_new_note` (blocked with a notice in read-only mode) writes an
+  empty file into the selected subfolder, or the root otherwise, via
+  `model.create_empty_note`, reloads the list, and opens it in the active tab.
 - Slugify → `on_slugify` reads the active tab's live content, derives a slug from
   its H1, **confirms via `_confirm`** (an OK/Cancel `MessageDialog`), then renames
   via `model.rename_note` and refreshes title + list. The button is only sensitive
-  when those conditions hold (see §3.3 toolbar).
+  in edit mode when those conditions hold (see §3.3 toolbar).
 - New tab (Ctrl+T) → `on_new_tab` → `_new_tab(focus=True)`.
 - Switch tabs → Ctrl+Tab / Ctrl+Shift+Tab cycle; Alt+1..9 jump (via
   `_on_key_press`).

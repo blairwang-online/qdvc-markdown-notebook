@@ -18,3 +18,10 @@ SORT_DATE_OLD = "date_old"
 # Sentinel object representing the "All Notes" virtual folder in the sidebar.
 # Compare with `is`, never `==`.
 ALL_NOTES = object()
+
+# Sidebar node kinds. Each sidebar row carries one of these so the selection
+# handler knows what the row represents (stored in a hidden TreeStore column).
+NODE_ALL_NOTES = "all_notes"        # every note under the root
+NODE_EMPTY_NOTES = "empty_notes"    # notes that are empty / all-whitespace
+NODE_SUBFOLDERS = "subfolders"      # the parent "Subfolders" row (no note list)
+NODE_SUBFOLDER = "subfolder"        # an individual subfolder (label = its name)

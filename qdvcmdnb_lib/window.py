@@ -20,6 +20,10 @@ from .config import (
     SORT_DATE_NEW,
     SORT_DATE_OLD,
     ALL_NOTES,
+    NODE_ALL_NOTES,
+    NODE_EMPTY_NOTES,
+    NODE_SUBFOLDERS,
+    NODE_SUBFOLDER,
 )
 from .settings import Settings
 from .editortab import EditorTab
@@ -40,15 +44,20 @@ class NotebookWindow(Gtk.Window):
         self.settings = Settings.load()
 
         self.root_folder = None
-        self.current_subfolder = ALL_NOTES
+        # Sidebar selection state: a node kind plus, for NODE_SUBFOLDER, the name.
+        self.current_node = NODE_ALL_NOTES
+        self.current_subfolder = None     # subfolder name when current_node is
+                                          # NODE_SUBFOLDER, else None
         self.sort_mode = SORT_ALPHA
         self._note_select_guard = False   # suppress reselection feedback loops
+        self.read_only = True             # (#1) start in read-only mode
 
         self._build_ui()
         # Start with one empty tab.
         self._new_tab(focus=False)
         self._apply_editor_font()
         self._apply_code_font()
+        self._apply_read_only()
         self._rebuild_recent_menu()
 
         if root_folder:
@@ -235,6 +244,22 @@ class NotebookWindow(Gtk.Window):
         btn_save.connect("clicked", self.on_save_note)
         toolbar.insert(btn_save, -1)
 
+        toolbar.insert(Gtk.SeparatorToolItem(), -1)
+
+        # Read-only toggle (#1). Pressed-in (active) means read-only; releasing
+        # it enters edit mode. Applies across all tabs.
+        self.btn_readonly = Gtk.ToggleToolButton()
+        self.btn_readonly.set_icon_name("changes-prevent-symbolic")
+        self.btn_readonly.set_label("Read-only")
+        self.btn_readonly.set_tooltip_text(
+            "Read-only mode (release to edit)")
+        self.btn_readonly.set_active(True)  # default: read-only
+        self._readonly_handler = self.btn_readonly.connect(
+            "toggled", self.on_toggle_read_only)
+        toolbar.insert(self.btn_readonly, -1)
+
+        toolbar.insert(Gtk.SeparatorToolItem(), -1)
+
         # Slugify: rename the active note from its level-1 heading. Enabled only
         # when the active tab's first line is a short (<32 char) H1.
         self.btn_slugify = Gtk.ToolButton(icon_name="insert-link")
@@ -254,9 +279,9 @@ class NotebookWindow(Gtk.Window):
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
 
-        # Columns: icon name (str), display label (str), folder name or "" for
-        #          All Notes (str), is_all_notes (bool)
-        self.sidebar_store = Gtk.TreeStore(str, str, str, bool)
+        # Columns: icon name (str), display label (str), node kind (str),
+        #          subfolder name (str, only meaningful for NODE_SUBFOLDER)
+        self.sidebar_store = Gtk.TreeStore(str, str, str, str)
         self.sidebar_view = Gtk.TreeView(model=self.sidebar_store)
         self.sidebar_view.set_headers_visible(False)
 
@@ -276,6 +301,10 @@ class NotebookWindow(Gtk.Window):
         return scroll
 
     def _build_notelist(self):
+        # A Stack: the scrolled note list, plus a placeholder shown when the
+        # "Subfolders" parent node is selected.
+        self.notelist_stack = Gtk.Stack()
+
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
 
@@ -295,7 +324,27 @@ class NotebookWindow(Gtk.Window):
                                self.on_notelist_button_press)
 
         scroll.add(self.note_view)
-        return scroll
+        self.notelist_stack.add_named(scroll, "list")
+        self.notelist_stack.add_named(
+            self._make_placeholder("Select a folder or note"), "placeholder")
+        self.notelist_stack.set_visible_child_name("list")
+        return self.notelist_stack
+
+    @staticmethod
+    def _make_placeholder(text):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.set_valign(Gtk.Align.CENTER)
+        box.set_halign(Gtk.Align.CENTER)
+        label = Gtk.Label()
+        label.set_markup(
+            f"<span size='large' foreground='#888888'>{text}</span>")
+        box.add(label)
+        return box
+
+    def _show_notelist_placeholder(self):
+        self.note_store.clear()
+        self.notelist_stack.set_visible_child_name("placeholder")
+        self.update_status()
 
     def _build_editor(self):
         # The editor area is a Gtk.Notebook; each page is an EditorTab.
@@ -310,9 +359,17 @@ class NotebookWindow(Gtk.Window):
         return self.notebook
 
     def _build_statusbar(self):
+        # A horizontal strip: a bold mode indicator (#1) on the left, then the
+        # regular statusbar filling the rest.
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.mode_label = Gtk.Label()
+        self.mode_label.set_margin_start(6)
+        self.mode_label.set_margin_end(6)
+        box.pack_start(self.mode_label, False, False, 0)
         self.statusbar = Gtk.Statusbar()
         self._status_ctx = self.statusbar.get_context_id("main")
-        return self.statusbar
+        box.pack_start(self.statusbar, True, True, 0)
+        return box
 
     # ----------------------------------------------------------- settings -- #
     def _apply_editor_font(self):
@@ -324,6 +381,17 @@ class NotebookWindow(Gtk.Window):
         """Apply the code font from settings to every open tab."""
         for tab in self._tabs:
             tab.apply_code_font(self.settings.code_font)
+
+    # ------------------------------------------------------- read-only -- #
+    def _apply_read_only(self):
+        """Reflect self.read_only across all tabs and the status bar."""
+        for tab in self._tabs:
+            tab.set_editable(not self.read_only)
+        self.update_status()
+
+    def on_toggle_read_only(self, button):
+        self.read_only = button.get_active()
+        self._apply_read_only()
 
     # --------------------------------------------------------------- tabs -- #
     def _active_tab(self):
@@ -377,6 +445,7 @@ class NotebookWindow(Gtk.Window):
                         on_close=self._close_tab,
                         code_font=self.settings.code_font)
         tab.apply_font(self.settings.editor_font)
+        tab.set_editable(not self.read_only)
         self._tabs.append(tab)
         idx = self.notebook.append_page(tab.widget, tab.tab_label)
         self.notebook.set_tab_reorderable(tab.widget, True)
@@ -432,6 +501,12 @@ class NotebookWindow(Gtk.Window):
 
     # -------------------------------------------------------- status bar -- #
     def update_status(self):
+        # Bold mode indicator (#1).
+        if self.read_only:
+            self.mode_label.set_markup("<b>Read-only mode</b>")
+        else:
+            self.mode_label.set_markup("<b>Edit mode</b>")
+
         count = len(self.note_store)
         tab = self._active_tab()
         if tab and tab.note:
@@ -450,12 +525,12 @@ class NotebookWindow(Gtk.Window):
 
     def _update_slugify_sensitivity(self):
         """
-        Enable Slugify only when the active tab has a note AND its current
-        (live) first line is a short level-1 heading.
+        Enable Slugify only when NOT in read-only mode AND the active tab has a
+        note whose current (live) first line is a short level-1 heading.
         """
         tab = self._active_tab()
         enabled = False
-        if tab is not None and tab.note is not None:
+        if not self.read_only and tab is not None and tab.note is not None:
             heading = model.heading_for_slug(tab.get_content())
             enabled = heading is not None and model.slugify(heading) != ""
         self.btn_slugify.set_sensitive(enabled)
@@ -467,7 +542,8 @@ class NotebookWindow(Gtk.Window):
             return
         self.root_folder = folder
         self.set_title(f"{APP_NAME} \u2014 {folder}")
-        self.current_subfolder = ALL_NOTES
+        self.current_node = NODE_ALL_NOTES
+        self.current_subfolder = None
         self._reload_sidebar()
         self._reload_notelist()
         tab = self._active_tab()
@@ -478,25 +554,39 @@ class NotebookWindow(Gtk.Window):
 
     def _reload_sidebar(self):
         self.sidebar_store.clear()
-        # Top segment: "All Notes". Row = [icon, label, folder_name, is_all].
+        # Row schema: [icon_name, label, node_kind, subfolder_name]
         self.sidebar_store.append(
-            None, ["emblem-documents", "All Notes", "", True])
-        # Bottom segment: immediate subfolders, each with a folder icon.
+            None, ["emblem-documents", "All Notes", NODE_ALL_NOTES, ""])
+        self.sidebar_store.append(
+            None, ["edit-clear", "Empty Notes", NODE_EMPTY_NOTES, ""])
+
+        subfolders_iter = self.sidebar_store.append(
+            None, ["folder", "Subfolders", NODE_SUBFOLDERS, ""])
         if self.root_folder:
             for sub in model.immediate_subfolders(self.root_folder):
-                self.sidebar_store.append(None, ["folder", sub, sub, False])
-        # Select "All Notes" by default.
+                self.sidebar_store.append(
+                    subfolders_iter, ["folder", sub, NODE_SUBFOLDER, sub])
+
+        # Expand the Subfolders branch so its children are visible, and select
+        # "All Notes" by default.
+        self.sidebar_view.expand_all()
         self.sidebar_view.get_selection().select_path(Gtk.TreePath.new_first())
 
     def _notes_for_current_subfolder(self):
         if not self.root_folder:
             return []
-        if self.current_subfolder is ALL_NOTES:
+        if self.current_node == NODE_ALL_NOTES:
             return model.collect_notes(self.root_folder)
-        folder = os.path.join(self.root_folder, self.current_subfolder)
-        return model.collect_notes(folder)
+        if self.current_node == NODE_EMPTY_NOTES:
+            return model.collect_empty_notes(self.root_folder)
+        if self.current_node == NODE_SUBFOLDER and self.current_subfolder:
+            folder = os.path.join(self.root_folder, self.current_subfolder)
+            return model.collect_notes(folder)
+        # NODE_SUBFOLDERS (parent) or anything else: no list.
+        return []
 
     def _reload_notelist(self, select_path=None):
+        self.notelist_stack.set_visible_child_name("list")
         self.note_store.clear()
         notes = model.sort_notes(
             self._notes_for_current_subfolder(), self.sort_mode)
@@ -543,12 +633,22 @@ class NotebookWindow(Gtk.Window):
         model_, treeiter = selection.get_selected()
         if treeiter is None:
             return
-        is_all = model_[treeiter][3]
-        if is_all:
-            self.current_subfolder = ALL_NOTES
+        node_kind = model_[treeiter][2]
+        self.current_node = node_kind
+        if node_kind == NODE_SUBFOLDER:
+            self.current_subfolder = model_[treeiter][3]
         else:
-            self.current_subfolder = model_[treeiter][2]
-        self._reload_notelist()
+            self.current_subfolder = None
+
+        if node_kind == NODE_SUBFOLDERS:
+            # The "Subfolders" parent itself has no note list: show placeholders
+            # in both the note list (pane 2) and the editor (pane 3).
+            self._show_notelist_placeholder()
+            tab = self._active_tab()
+            if tab:
+                tab.clear()
+        else:
+            self._reload_notelist()
 
     def on_note_selection_changed(self, selection):
         if self._note_select_guard:
@@ -629,14 +729,19 @@ class NotebookWindow(Gtk.Window):
             self._close_tab(tab)
 
     def on_new_note(self, _widget):
+        if self.read_only:
+            self._error_dialog(
+                "Read-only mode is on. Release the Read-only button to make "
+                "changes.")
+            return
         if not self.root_folder:
             self._error_dialog("Open a working folder first (Ctrl+O).")
             return
-        # Target folder = currently selected subfolder, else the root.
-        if self.current_subfolder is ALL_NOTES:
-            target_dir = self.root_folder
-        else:
+        # Target folder = the selected subfolder if one is selected, else root.
+        if self.current_node == NODE_SUBFOLDER and self.current_subfolder:
             target_dir = os.path.join(self.root_folder, self.current_subfolder)
+        else:
+            target_dir = self.root_folder
 
         try:
             path = model.create_empty_note(target_dir)

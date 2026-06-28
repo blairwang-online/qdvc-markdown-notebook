@@ -122,6 +122,11 @@ class EditorTab:
     def apply_code_font(self, font_desc_str):
         self.highlighter.set_code_font(font_desc_str)
 
+    def set_editable(self, editable):
+        """Toggle whether the user can modify this tab's text (read-only mode)."""
+        self.text_view.set_editable(editable)
+        self.text_view.set_cursor_visible(editable)
+
     def get_content(self):
         start = self.text_buffer.get_start_iter()
         end = self.text_buffer.get_end_iter()

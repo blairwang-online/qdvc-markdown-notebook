@@ -6,11 +6,30 @@ for a native MATE / GNOME2-era look and feel (think Pluma and Atril).
 
 It points at a folder of `.md` files and gives you:
 
-- **Left pane** — "All Notes" plus the immediate subfolders of your data folder.
-- **Middle pane** — the list of notes in the selected folder.
+- **Left pane** — a tree: *All Notes*, *Empty Notes*, and *Subfolders* (with each
+  immediate subfolder listed underneath).
+- **Middle pane** — the list of notes for the selected sidebar item.
 - **Right pane** — a monospace editor with lightweight markdown syntax highlighting (no font-size variation).
 
-Plus a menu bar, toolbar (New / Save), and a status bar.
+Plus a menu bar, toolbar (New / Save / Read-only / Slugify), and a status bar.
+
+## Read-only mode
+
+The app starts in **read-only mode** — you can browse and read notes but not edit
+them. The status bar shows the current mode in bold, and the toolbar has a
+Read-only toggle (pressed in by default). Release it to enter **edit mode**. The
+setting applies across all tabs at once.
+
+## Sidebar
+
+The left sidebar is a tree:
+
+- **All Notes** — every note under the working folder.
+- **Empty Notes** — notes whose content is empty or only whitespace.
+- **Subfolders** — expands to each immediate subfolder; selecting a subfolder
+  lists its notes. Selecting the *Subfolders* heading itself shows a placeholder
+  in both the note list and the editor.
+
 
 ## Usage
 

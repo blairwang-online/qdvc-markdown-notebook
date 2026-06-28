@@ -56,6 +56,22 @@ def collect_notes(folder):
     return notes
 
 
+def note_is_empty(note):
+    """
+    Return True if `note`'s content is empty or entirely whitespace. Unreadable
+    files are treated as not-empty (so they aren't silently hidden/altered).
+    """
+    try:
+        return read_note(note).strip() == ""
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def collect_empty_notes(folder):
+    """All notes under `folder` whose content is empty or all whitespace."""
+    return [n for n in collect_notes(folder) if note_is_empty(n)]
+
+
 def immediate_subfolders(root):
     """Return sorted list of immediate subfolder names of `root`."""
     try:
