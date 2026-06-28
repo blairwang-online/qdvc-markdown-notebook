@@ -33,10 +33,11 @@ The left sidebar is a tree:
 ## Search
 
 A search box sits at the top of the note list. Type a term and press **Enter**
-or click **Search** to filter the list to notes whose name matches (case-
-insensitive). Searching does not happen on every keystroke. Clearing the box (or
-pressing its clear icon) removes the filter. When a search matches nothing, the
-status bar shows *No search results found!* in place of the item count.
+or click **Search** to filter the list to notes that match (case-insensitive) in
+either their name or their **full contents**. Searching does not happen on every
+keystroke. Clearing the box (or pressing its clear icon) removes the filter. When
+a search matches nothing, the status bar shows *No search results found!* in
+place of the item count.
 
 ## Menus
 

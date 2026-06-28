@@ -122,6 +122,11 @@ now uses the `NODE_*` kinds instead.)
 - `note_is_empty(note)` / `collect_empty_notes(folder)` — for the sidebar's
   *Empty Notes* node. A note is "empty" if its content `.strip()`s to `""`.
   Unreadable files are treated as not-empty (so they aren't silently hidden).
+- `note_matches(note, query_lower)` / `filter_notes(notes, query)` — for the
+  note-list search. Matching is case-insensitive against the note's display name
+  **and its full file contents** (read on demand). A blank/None query returns the
+  list unchanged. Unreadable files fall back to name-only matching, so a transient
+  read error doesn't make a note disappear from results.
 - `sort_notes(notes, sort_mode)` — returns a new sorted list per the `SORT_*`
   mode. (Moved out of the window during the refactor so sorting is testable.)
 - Disk I/O: `read_note`, `write_note`, `unique_note_path`, `create_empty_note`.
@@ -294,11 +299,14 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   `Gtk.ListStore(str, str, float)` = display name, full path, mtime) and a
   "placeholder" child shown when the Subfolders parent is selected.
   `_reload_notelist` switches back to "list". Search filtering lives in
-  `_reload_notelist`: `self.search_query` (None = off) is matched
-  case-insensitively as a substring of each note's display name; an empty result
-  sets `self._search_no_results`, which `update_status` renders as "No search
-  results found!" instead of the item count. The filter persists across node
-  switches and reloads until the box is cleared.
+  `_reload_notelist`: `self.search_query` (None = off) is passed to
+  `model.filter_notes`, which matches case-insensitively against each note's name
+  **and its full contents**; an empty result sets `self._search_no_results`,
+  which `update_status` renders as "No search results found!" instead of the item
+  count. The filter persists across node switches and reloads until the box is
+  cleared. (Content search reads every candidate file per search — fine for
+  typical note collections; for very large trees, consider an index or a
+  background thread — see §7.)
 - Editor: a `Gtk.Notebook`; each page is an `EditorTab` (see §3.2a). `editor_font`
   themes the whole view; `code_font` themes code spans via the highlighter tags.
   Keep a single uniform size for body text — do not introduce size-varying tags.
@@ -387,7 +395,9 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 - Free-form rename note (inline edit in the list; `model.rename_note` already
   exists, so this is mostly UI).
 - Delete note (with confirmation; move to trash via `Gio.File.trash`).
-- Live full-text search box above the note list (filter `note_store`).
+- Search performance: content search currently reads every candidate file per
+  query. For large note trees, add a content index or run the filter on a
+  background thread (and/or debounce) to keep the UI responsive.
 - File-system watch (`Gio.FileMonitor`) to auto-refresh on external changes.
 - Per-note word/char count in the status bar.
 - Remember last folder and window geometry (e.g. as more keys in the settings

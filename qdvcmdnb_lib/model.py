@@ -72,6 +72,33 @@ def collect_empty_notes(folder):
     return [n for n in collect_notes(folder) if note_is_empty(n)]
 
 
+def note_matches(note, query_lower):
+    """
+    Return True if `query_lower` (already lowercased) occurs, case-insensitively,
+    in either the note's display name or its file contents.
+
+    Reads the file on demand. Unreadable files fall back to matching the name
+    only, so a transient read error doesn't make a note vanish from results.
+    """
+    if query_lower in note.display_name().lower():
+        return True
+    try:
+        return query_lower in read_note(note).lower()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def filter_notes(notes, query):
+    """
+    Filter `notes` to those matching `query` (case-insensitive) in name or
+    contents. A blank/None query returns the list unchanged.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return list(notes)
+    return [n for n in notes if note_matches(n, q)]
+
+
 def immediate_subfolders(root):
     """Return sorted list of immediate subfolder names of `root`."""
     try:

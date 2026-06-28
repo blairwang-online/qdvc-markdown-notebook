@@ -689,11 +689,12 @@ class NotebookWindow(Gtk.Window):
             self._notes_for_current_subfolder(), self.sort_mode)
 
         # Apply the search filter, if any. Matching is case-insensitive against
-        # the note's display name. A blank/None query means no filtering.
-        query = (self.search_query or "").strip().lower()
-        if query:
-            notes = [n for n in notes if query in n.display_name().lower()]
-            self._search_no_results = (len(notes) == 0)
+        # the note's name AND its full contents (see model.note_matches). A
+        # blank/None query means no filtering.
+        if (self.search_query or "").strip():
+            filtered = model.filter_notes(notes, self.search_query)
+            self._search_no_results = (len(filtered) == 0)
+            notes = filtered
         else:
             self._search_no_results = False
 
