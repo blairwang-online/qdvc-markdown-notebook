@@ -22,6 +22,7 @@ from .config import (
     ALL_NOTES,
 )
 from .highlighter import MarkdownHighlighter
+from .settings import Settings
 
 
 class NotebookWindow(Gtk.Window):
@@ -29,6 +30,8 @@ class NotebookWindow(Gtk.Window):
     def __init__(self, root_folder=None):
         super().__init__(title=APP_NAME)
         self.set_default_size(1000, 640)
+
+        self.settings = Settings.load()
 
         self.root_folder = None
         self.current_note = None          # Note currently open in editor
@@ -38,6 +41,8 @@ class NotebookWindow(Gtk.Window):
         self._loading = False             # guard against spurious "changed"
 
         self._build_ui()
+        self._apply_editor_font()
+        self._rebuild_recent_menu()
 
         if root_folder:
             self.open_folder(os.path.abspath(root_folder))
@@ -99,6 +104,12 @@ class NotebookWindow(Gtk.Window):
         mi_open.connect("activate", self.on_open_folder)
         file_menu.append(mi_open)
 
+        # "Open Recent" submenu, populated dynamically from settings.
+        self.recent_menu_item = Gtk.MenuItem(label="Open Recent")
+        self.recent_menu = Gtk.Menu()
+        self.recent_menu_item.set_submenu(self.recent_menu)
+        file_menu.append(self.recent_menu_item)
+
         file_menu.append(Gtk.SeparatorMenuItem())
 
         mi_quit = Gtk.MenuItem(label="Quit")
@@ -131,6 +142,12 @@ class NotebookWindow(Gtk.Window):
                                          group=mi_alpha)
         mi_old_first.connect("toggled", self.on_sort_changed, SORT_DATE_OLD)
         view_menu.append(mi_old_first)
+
+        view_menu.append(Gtk.SeparatorMenuItem())
+
+        mi_font = Gtk.MenuItem(label="Set Editor Font\u2026")
+        mi_font.connect("activate", self.on_choose_font)
+        view_menu.append(mi_font)
 
         menubar.append(view_item)
         return menubar
@@ -206,9 +223,8 @@ class NotebookWindow(Gtk.Window):
         self.text_view.set_top_margin(8)
         self.text_view.set_bottom_margin(8)
 
-        # Force a single uniform monospace size, no scaling whatsoever.
-        font = Pango.FontDescription("monospace 11")
-        self.text_view.override_font(font)
+        # The actual font is applied by _apply_editor_font() from settings,
+        # called once after the UI is built and again when the user changes it.
 
         self.highlighter = MarkdownHighlighter(self.text_buffer)
         self.text_buffer.connect("changed", self.on_text_changed)
@@ -220,6 +236,35 @@ class NotebookWindow(Gtk.Window):
         self.statusbar = Gtk.Statusbar()
         self._status_ctx = self.statusbar.get_context_id("main")
         return self.statusbar
+
+    # ----------------------------------------------------------- settings -- #
+    def _apply_editor_font(self):
+        """Apply the editor font from settings to the TextView."""
+        font = Pango.FontDescription(self.settings.editor_font)
+        self.text_view.override_font(font)
+
+    def _rebuild_recent_menu(self):
+        """Repopulate the File > Open Recent submenu from settings."""
+        for child in self.recent_menu.get_children():
+            self.recent_menu.remove(child)
+
+        recents = self.settings.recent_folders
+        if not recents:
+            placeholder = Gtk.MenuItem(label="(none)")
+            placeholder.set_sensitive(False)
+            self.recent_menu.append(placeholder)
+        else:
+            for folder in recents:
+                item = Gtk.MenuItem(label=folder)
+                item.connect("activate", self.on_open_recent, folder)
+                self.recent_menu.append(item)
+        self.recent_menu.show_all()
+
+    def _remember_folder(self, folder):
+        """Record a folder as recent, persist, and refresh the menu."""
+        self.settings.add_recent_folder(folder)
+        self.settings.save()
+        self._rebuild_recent_menu()
 
     # -------------------------------------------------------- status bar -- #
     def update_status(self):
@@ -247,6 +292,7 @@ class NotebookWindow(Gtk.Window):
         self._reload_notelist()
         self._clear_editor()
         self.update_status()
+        self._remember_folder(folder)
 
     def _reload_sidebar(self):
         self.sidebar_store.clear()
@@ -388,6 +434,33 @@ class NotebookWindow(Gtk.Window):
             self.open_folder(folder)
         else:
             dialog.destroy()
+
+    def on_open_recent(self, _widget, folder):
+        if not os.path.isdir(folder):
+            self._error_dialog(f"Folder no longer exists:\n{folder}")
+            # Drop the dead entry and refresh.
+            self.settings.recent_folders = [
+                f for f in self.settings.recent_folders if f != folder
+            ]
+            self.settings.save()
+            self._rebuild_recent_menu()
+            return
+        if self._maybe_warn_unsaved() is False:
+            return
+        self.open_folder(folder)
+
+    def on_choose_font(self, _widget):
+        dialog = Gtk.FontChooserDialog(title="Set Editor Font", parent=self)
+        dialog.set_font(self.settings.editor_font)
+        # Only the markdown editor is themed; a sample hints at the use.
+        dialog.set_preview_text("# Heading\nBody text 0123 *italic* `code`")
+        if dialog.run() == Gtk.ResponseType.OK:
+            chosen = dialog.get_font()
+            if chosen:
+                self.settings.set_editor_font(chosen)
+                self.settings.save()
+                self._apply_editor_font()
+        dialog.destroy()
 
     def on_sort_changed(self, widget, mode):
         if widget.get_active():

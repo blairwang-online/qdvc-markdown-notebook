@@ -17,6 +17,7 @@ qdvc_markdown_notebook.py        # entry point: argv parsing, builds window, Gtk
 qdvcmdnb_lib/
     __init__.py
     config.py                    # constants, sort modes, ALL_NOTES sentinel (no GTK, no I/O)
+    settings.py                  # persistent user settings: YAML under ~/.config (no GTK)
     model.py                     # data layer: Note + filesystem + disk I/O (no GTK)
     highlighter.py               # MarkdownHighlighter (GTK TextBuffer tagging)
     window.py                    # NotebookWindow: view + controller
@@ -41,6 +42,10 @@ script imports the package by name).
 - Python 3.6+ (uses f-strings; the walrus `:=` in the highlighter needs 3.8+).
 - PyGObject with GTK 3 typelibs: `python3-gi`, `gir1.2-gtk-3.0`.
 - `Pango`, `Gdk`, `GLib`, `Gio` come with the GTK 3 introspection data.
+- **PyYAML** — *optional*. Used only by `settings.py` to persist user settings.
+  If it is missing the app still runs with default settings; nothing is saved
+  and a one-line warning is printed to stderr. Install with `pip install pyyaml`
+  (Debian/MATE: `sudo apt install python3-yaml`).
 
 There is **no** markdown-rendering library (e.g. `markdown`, `mistune`). This is
 intentional: the spec requires a monospace view with no font-size variation, so
@@ -48,12 +53,31 @@ highlighting is done with regexes against a `Gtk.TextBuffer` and tag table.
 
 ## 3. Architecture
 
-Four logical parts, one per module:
+Five logical parts, one per module:
 
 ### 3.0 `config.py`
 Plain constants only — `APP_NAME`, `MARKDOWN_EXTENSIONS`, the `SORT_*` mode
 strings, and the `ALL_NOTES` sentinel. No GTK, no I/O, so it is safe to import
 from anywhere. `ALL_NOTES` is an `object()`; compare with `is`, never `==`.
+
+### 3.0a `settings.py` — persistent user settings (no GTK)
+- Stores settings as YAML at `$XDG_CONFIG_HOME/qdvcmdnb/config.yml`, falling back
+  to `~/.config/qdvcmdnb/config.yml`. Resolve via `config_dir()` / `config_path()`.
+- `Settings` holds `editor_font` (a Pango font-description string) and
+  `recent_folders` (most-recent-first list, capped at `MAX_RECENT`). Construct
+  via `Settings.load()`, which returns sane defaults on a missing/malformed file
+  or any read error — it never raises to the caller.
+- `save()` writes atomically (temp file + `os.replace`) and returns a bool.
+- `add_recent_folder()` dedups (moves existing to front), prunes directories that
+  no longer exist, and caps the list.
+- **PyYAML is optional.** If `import yaml` fails, `_HAVE_YAML` is False: `load()`
+  returns defaults, `save()` is a no-op returning False, and a single stderr
+  warning is emitted (guarded by `_warned_no_yaml`). The app remains usable.
+- **Forward compatibility:** unrecognised top-level keys in the file are stashed
+  in `Settings._extra` and re-emitted on `save()`, so a newer build's settings
+  survive a round-trip through an older one. Bump `SCHEMA_VERSION` for real
+  migrations and add handling in `_apply()`.
+- No GTK import — unit-testable headless.
 
 ### 3.1 `highlighter.py` — `MarkdownHighlighter`
 - Owns the editor `Gtk.TextBuffer`'s tag table and applies colour/weight tags.
@@ -97,18 +121,19 @@ Key state attributes:
 - `_dirty` — unsaved-changes flag.
 - `_loading` — guard set while programmatically setting buffer text so the
   `changed` handler doesn't mark the buffer dirty or re-highlight spuriously.
+- `settings` — the loaded `Settings` instance (see §3.0a).
+
+Settings wiring: `__init__` calls `Settings.load()`, then after `_build_ui()`
+calls `_apply_editor_font()` and `_rebuild_recent_menu()`. `open_folder()` calls
+`_remember_folder()` (which records, saves, and refreshes the Open Recent menu).
+`on_choose_font` uses a `Gtk.FontChooserDialog`, persists the choice, and
+re-applies it; `on_open_recent` opens a folder from the menu (handling the case
+where it has since been deleted). The editor font is applied **only** via
+`_apply_editor_font()` so there is one source of truth.
 
 Note: inside the two selection handlers the local variable for the GTK model is
 named `model_` (trailing underscore) to avoid shadowing the imported `model`
 module.
-- `root_folder` — absolute path of the open data folder, or `None`.
-- `current_subfolder` — either the sentinel `ALL_NOTES` or a subfolder **name**
-  (relative to `root_folder`).
-- `current_note` — the `Note` open in the editor, or `None`.
-- `sort_mode` — one of `SORT_ALPHA`, `SORT_DATE_NEW`, `SORT_DATE_OLD`.
-- `_dirty` — unsaved-changes flag.
-- `_loading` — guard set while programmatically setting buffer text so the
-  `changed` handler doesn't mark the buffer dirty or re-highlight spuriously.
 
 UI is built in `_build_*` methods and assembled in `_build_ui()`:
 - Layout: `vbox` → menubar, toolbar, then nested `Gtk.Paned`
@@ -116,9 +141,10 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   then statusbar. Pane positions set with `set_position`.
 - Sidebar: `Gtk.TreeStore(str, str, bool)` = (label, subfolder-name, is_all).
 - Note list: `Gtk.ListStore(str, str, float)` = (display name, full path, mtime).
-- Editor: `Gtk.TextView` with `set_monospace(True)` **and** an explicit
-  `override_font(Pango.FontDescription("monospace 11"))` to guarantee a single
-  uniform size. Do not introduce size-varying tags — the spec forbids it.
+- Editor: `Gtk.TextView` with `set_monospace(True)`. The font is applied by
+  `_apply_editor_font()` from `settings.editor_font` (a Pango font-description
+  string), not hard-coded. Keep it a single uniform size — do not introduce
+  size-varying tags; the spec forbids it.
 
 ## 4. Control flow
 

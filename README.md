@@ -23,12 +23,21 @@ python3 qdvc_markdown_notebook.py                          # start empty, Ctrl+O
 
 - Python 3
 - GTK 3 with PyGObject (`python3-gi`, `gir1.2-gtk-3.0`)
+- PyYAML (optional) — for saving settings; the app runs without it
 
 On Debian/Ubuntu/MATE:
 
 ```bash
-sudo apt install python3-gi gir1.2-gtk-3.0
+sudo apt install python3-gi gir1.2-gtk-3.0 python3-yaml
 ```
+
+## Settings
+
+Persistent settings live in a plain, git-trackable YAML file at
+`~/.config/qdvcmdnb/config.yml` (or under `$XDG_CONFIG_HOME`). It remembers:
+
+- **Editor font** — set via *View → Set Editor Font…*
+- **Recent working folders** — reopen them from *File → Open Recent*
 
 ## Keyboard shortcuts
 
