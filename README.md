@@ -37,6 +37,8 @@ Persistent settings live in a plain, git-trackable YAML file at
 `~/.config/qdvcmdnb/config.yml` (or under `$XDG_CONFIG_HOME`). It remembers:
 
 - **Editor font** — set via *View → Set Editor Font…*
+- **Code font** — font for inline code and fenced code blocks, set via
+  *View → Set Code Font…*
 - **Recent working folders** — reopen them from *File → Open Recent*
 
 ## Tabs
@@ -44,9 +46,11 @@ Persistent settings live in a plain, git-trackable YAML file at
 Open notes across multiple tabs:
 
 - **Single-click** a note — opens it in the current tab (replacing its content).
-- **Right-click** a note → *Open in new tab*.
+- **Right-click** a note for a menu: *Open in new tab*, *Copy full path*, and
+  *Show in file browser*.
 - **Ctrl+T** — new empty tab. **Ctrl+W** — close the current tab (also the little
   × on each tab).
+- Tabs are titled with the note name (truncated past 12 characters).
 - With only one tab open, the tab bar is hidden.
 
 ## Keyboard shortcuts

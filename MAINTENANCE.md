@@ -64,10 +64,12 @@ from anywhere. `ALL_NOTES` is an `object()`; compare with `is`, never `==`.
 ### 3.0a `settings.py` — persistent user settings (no GTK)
 - Stores settings as YAML at `$XDG_CONFIG_HOME/qdvcmdnb/config.yml`, falling back
   to `~/.config/qdvcmdnb/config.yml`. Resolve via `config_dir()` / `config_path()`.
-- `Settings` holds `editor_font` (a Pango font-description string) and
-  `recent_folders` (most-recent-first list, capped at `MAX_RECENT`). Construct
-  via `Settings.load()`, which returns sane defaults on a missing/malformed file
-  or any read error — it never raises to the caller.
+- `Settings` holds `editor_font` and `code_font` (both Pango font-description
+  strings) and `recent_folders` (most-recent-first list, capped at `MAX_RECENT`).
+  `editor_font` themes the whole editor; `code_font` is applied to inline code and
+  fenced code blocks only (see the highlighter). Construct via `Settings.load()`,
+  which returns sane defaults on a missing/malformed file or any read error — it
+  never raises to the caller.
 - `save()` writes atomically (temp file + `os.replace`) and returns a bool.
 - `add_recent_folder()` dedups (moves existing to front), prunes directories that
   no longer exist, and caps the list.
@@ -94,6 +96,12 @@ from anywhere. `ALL_NOTES` is an `object()`; compare with `is`, never `==`.
 - Offsets: the buffer text is split on `\n`; `offset` tracks the character index
   of each line start, `+1` per line for the stripped newline. If you change the
   splitting, keep this accounting correct or tags will land on wrong ranges.
+- Code font: the `code_inline` and `code_block` tags no longer hard-code
+  `family="monospace"`. `set_code_font(desc)` sets the tags' `font` property
+  (a full Pango font-description string, e.g. "Fira Code 10"), so the user's
+  *View → Set Code Font* choice fully controls code-span family and size while
+  the rest of the editor uses `editor_font`. The constructor takes `code_font`
+  and applies it immediately, so already-loaded text reflects the font.
 
 ### 3.2 `model.py` — data layer (no GTK)
 - `Note` — a thin wrapper over a file path; caches `name` and `mtime`.
@@ -118,13 +126,18 @@ window. Each `EditorTab` owns its own `Gtk.TextView`, `Gtk.TextBuffer`,
 `MarkdownHighlighter`, the `note` open in it (or `None`), and per-tab `dirty` /
 `_loading` flags.
 - `widget` — the page widget added to the `Gtk.Notebook` (a `ScrolledWindow`).
-- `tab_label` — a horizontal box: an ellipsized title label + a borderless
-  close button (Caja-style, `window-close` icon at `MENU` size).
+- `tab_label` — a horizontal box: a title label + a borderless close button
+  (Caja-style, `window-close` icon at `MENU` size). The title is the note's
+  display name, truncated to `MAX_TAB_TITLE` (12) characters with a trailing
+  ellipsis when longer; a leading `*` marks unsaved changes. Truncation is done
+  in `_refresh_title()` on the string itself (not via Pango width-ellipsize, which
+  depended on allocated width and could clip even short names).
 - Callbacks passed in by the window: `on_changed(tab)` (buffer edited, not during
   a programmatic load) and `on_close(tab)` (close button clicked).
 - API: `load_note(note)` → bool, `save()` → bool (both return False on I/O error
   and leave the dialog to the caller), `clear()`, `get_content()`,
-  `apply_font(str)`, `title_text()`.
+  `apply_font(str)`, `apply_code_font(str)`, `title_text()`. The constructor
+  takes `code_font` and forwards it to the highlighter.
 - The dirty marker is a leading `*` on the tab title, refreshed by
   `_refresh_title()`.
 - `_loading` guards the buffer `changed` signal during programmatic text sets,
@@ -163,12 +176,13 @@ Tab wiring:
   dirty tab before exit.
 
 Settings wiring: `__init__` calls `Settings.load()`, then after `_build_ui()`
-calls `_apply_editor_font()` and `_rebuild_recent_menu()`. `open_folder()` calls
-`_remember_folder()` (which records, saves, and refreshes the Open Recent menu).
-`on_choose_font` uses a `Gtk.FontChooserDialog`, persists the choice, and
-re-applies it to **all** tabs; `on_open_recent` opens a folder from the menu
-(handling the case where it has since been deleted). The editor font is applied
-**only** via `_apply_editor_font()` so there is one source of truth.
+calls `_apply_editor_font()`, `_apply_code_font()`, and `_rebuild_recent_menu()`.
+`open_folder()` calls `_remember_folder()` (which records, saves, and refreshes
+the Open Recent menu). `on_choose_font` / `on_choose_code_font` use a
+`Gtk.FontChooserDialog`, persist the choice, and re-apply it to **all** tabs
+(`_apply_editor_font` / `_apply_code_font` respectively); `on_open_recent` opens a
+folder from the menu (handling the case where it has since been deleted). Fonts
+are applied **only** via those two helpers so there is one source of truth each.
 
 Note: inside the selection handlers the local variable for the GTK model is
 named `model_` (trailing underscore) to avoid shadowing the imported `model`
@@ -178,11 +192,17 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 - Layout: `vbox` → menubar, toolbar, then nested `Gtk.Paned`
   (`outer` horizontal holds sidebar + `inner`; `inner` holds note list + editor),
   then statusbar. Pane positions set with `set_position`.
-- Sidebar: `Gtk.TreeStore(str, str, bool)` = (label, subfolder-name, is_all).
+- Sidebar: `Gtk.TreeStore(str, str, str, bool)` = (icon-name, label,
+  subfolder-name, is_all). The column packs a `CellRendererPixbuf` (icon-name
+  attribute → column 0) before the text renderer (→ column 1). Icons are
+  freedesktop names: `emblem-documents` for All Notes, `folder` for subfolders.
+  **Beware the index shift:** `is_all` is column **3**, subfolder name column
+  **2** (they were 2 and 1 before the icon column was added) — selection handlers
+  read those indices.
 - Note list: `Gtk.ListStore(str, str, float)` = (display name, full path, mtime).
-- Editor: a `Gtk.Notebook`; each page is an `EditorTab` (see §3.2a). The font is
-  applied per tab from `settings.editor_font`, not hard-coded. Keep it a single
-  uniform size — do not introduce size-varying tags; the spec forbids it.
+- Editor: a `Gtk.Notebook`; each page is an `EditorTab` (see §3.2a). `editor_font`
+  themes the whole view; `code_font` themes code spans via the highlighter tags.
+  Keep a single uniform size for body text — do not introduce size-varying tags.
 
 ## 4. Control flow
 
@@ -193,8 +213,11 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   tab for unsaved changes (cancelling restores the prior selection via
   `_reselect_active_note`), then `_load_note_in_active_tab` **replaces** the
   active tab's content.
-- Right-click a note → `on_notelist_button_press` → "Open in new tab" →
-  `_load_note_in_new_tab`.
+- Right-click a note → `on_notelist_button_press` builds a popup with: "Open in
+  new tab" (`_load_note_in_new_tab`), "Copy full path" (`_copy_path_to_clipboard`
+  via the `CLIPBOARD` selection), and "Show in file browser"
+  (`_show_in_file_browser`, which converts the parent dir to a `file://` URI with
+  `GLib.filename_to_uri` and opens it via `Gtk.show_uri_on_window`).
 - Typing → the tab's own `_buffer_changed` sets its `dirty` flag, re-highlights,
   updates the tab title, and calls back to the window to refresh the status bar.
 - New note → `on_new_note` writes an empty file into the current subfolder (or

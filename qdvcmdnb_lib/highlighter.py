@@ -22,9 +22,11 @@ class MarkdownHighlighter:
     buffer, which is fine for typical note sizes.
     """
 
-    def __init__(self, buffer):
+    def __init__(self, buffer, code_font="monospace 11"):
         self.buffer = buffer
+        self._code_font = code_font
         self._make_tags()
+        self.set_code_font(code_font)
 
         # Compile once. Each entry: (tag_name, compiled_regex, group_index)
         # group_index None means "whole match".
@@ -55,13 +57,24 @@ class MarkdownHighlighter:
         ensure("blockquote", foreground="#5c3566", style=Pango.Style.ITALIC)
         ensure("list", foreground="#a40000", weight=Pango.Weight.BOLD)
         ensure("hr", foreground="#888888")
-        ensure("code_inline", foreground="#ce5c00",
-               family="monospace", background="#f0f0f0")
-        ensure("code_block", foreground="#4e9a06",
-               family="monospace", background="#f5f5f5")
+        ensure("code_inline", foreground="#ce5c00", background="#f0f0f0")
+        ensure("code_block", foreground="#4e9a06", background="#f5f5f5")
         ensure("bold", weight=Pango.Weight.BOLD)
         ensure("italic", style=Pango.Style.ITALIC)
         ensure("link", foreground="#3465a4", underline=Pango.Underline.SINGLE)
+
+    def set_code_font(self, font_desc_str):
+        """
+        Set the font used for inline code and fenced code blocks. Accepts a
+        Pango font-description string (e.g. "DejaVu Sans Mono 11"). Applied to
+        the existing tags so already-highlighted text updates immediately.
+        """
+        self._code_font = font_desc_str
+        table = self.buffer.get_tag_table()
+        for name in ("code_inline", "code_block"):
+            tag = table.lookup(name)
+            if tag is not None:
+                tag.set_property("font", font_desc_str)
 
     def highlight(self):
         buf = self.buffer

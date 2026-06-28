@@ -20,6 +20,7 @@ from . import model
 from .highlighter import MarkdownHighlighter
 
 UNTITLED_LABEL = "Untitled"
+MAX_TAB_TITLE = 12  # characters before truncation with an ellipsis
 
 
 class EditorTab:
@@ -34,11 +35,12 @@ class EditorTab:
         dirty       True if there are unsaved edits
     """
 
-    def __init__(self, on_changed, on_close):
+    def __init__(self, on_changed, on_close, code_font="monospace 11"):
         """
         on_changed(tab): called when this tab's buffer changes (not during
                          programmatic loads).
         on_close(tab):   called when the tab's close button is clicked.
+        code_font:       Pango font-description string for code spans/blocks.
         """
         self._on_changed = on_changed
         self._on_close = on_close
@@ -60,7 +62,8 @@ class EditorTab:
         self.text_view.set_top_margin(8)
         self.text_view.set_bottom_margin(8)
 
-        self.highlighter = MarkdownHighlighter(self.text_buffer)
+        self.highlighter = MarkdownHighlighter(self.text_buffer,
+                                               code_font=code_font)
         self.text_buffer.connect("changed", self._buffer_changed)
 
         self.widget.add(self.text_view)
@@ -70,8 +73,6 @@ class EditorTab:
         self.tab_label = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
                                  spacing=4)
         self._title_label = Gtk.Label(label=UNTITLED_LABEL)
-        self._title_label.set_ellipsize(Pango.EllipsizeMode.END)
-        self._title_label.set_max_width_chars(20)
 
         close_btn = Gtk.Button()
         close_btn.set_relief(Gtk.ReliefStyle.NONE)
@@ -90,6 +91,9 @@ class EditorTab:
     # --------------------------------------------------------------- API -- #
     def apply_font(self, font_desc_str):
         self.text_view.override_font(Pango.FontDescription(font_desc_str))
+
+    def apply_code_font(self, font_desc_str):
+        self.highlighter.set_code_font(font_desc_str)
 
     def get_content(self):
         start = self.text_buffer.get_start_iter()
@@ -154,6 +158,8 @@ class EditorTab:
 
     def _refresh_title(self):
         title = self.title_text()
+        if len(title) > MAX_TAB_TITLE:
+            title = title[:MAX_TAB_TITLE] + "\u2026"
         if self.dirty:
             title = "*" + title
         self._title_label.set_text(title)

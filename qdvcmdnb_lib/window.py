@@ -11,7 +11,7 @@ import os
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, Gdk, Pango  # noqa: E402
+from gi.repository import Gtk, Gdk, Pango, GLib  # noqa: E402
 
 from . import model
 from .config import (
@@ -42,6 +42,7 @@ class NotebookWindow(Gtk.Window):
         # Start with one empty tab.
         self._new_tab(focus=False)
         self._apply_editor_font()
+        self._apply_code_font()
         self._rebuild_recent_menu()
 
         if root_folder:
@@ -166,6 +167,10 @@ class NotebookWindow(Gtk.Window):
         mi_font.connect("activate", self.on_choose_font)
         view_menu.append(mi_font)
 
+        mi_code_font = Gtk.MenuItem(label="Set Code Font\u2026")
+        mi_code_font.connect("activate", self.on_choose_code_font)
+        view_menu.append(mi_code_font)
+
         menubar.append(view_item)
         return menubar
 
@@ -191,14 +196,19 @@ class NotebookWindow(Gtk.Window):
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
 
-        # Columns: display label (str), folder name or "" for All Notes (str),
-        #          is_all_notes (bool)
-        self.sidebar_store = Gtk.TreeStore(str, str, bool)
+        # Columns: icon name (str), display label (str), folder name or "" for
+        #          All Notes (str), is_all_notes (bool)
+        self.sidebar_store = Gtk.TreeStore(str, str, str, bool)
         self.sidebar_view = Gtk.TreeView(model=self.sidebar_store)
         self.sidebar_view.set_headers_visible(False)
 
-        renderer = Gtk.CellRendererText()
-        col = Gtk.TreeViewColumn("Folders", renderer, text=0)
+        col = Gtk.TreeViewColumn("Folders")
+        icon_renderer = Gtk.CellRendererPixbuf()
+        text_renderer = Gtk.CellRendererText()
+        col.pack_start(icon_renderer, False)
+        col.pack_start(text_renderer, True)
+        col.add_attribute(icon_renderer, "icon-name", 0)
+        col.add_attribute(text_renderer, "text", 1)
         self.sidebar_view.append_column(col)
 
         self.sidebar_view.get_selection().connect(
@@ -252,6 +262,11 @@ class NotebookWindow(Gtk.Window):
         for tab in self._tabs:
             tab.apply_font(self.settings.editor_font)
 
+    def _apply_code_font(self):
+        """Apply the code font from settings to every open tab."""
+        for tab in self._tabs:
+            tab.apply_code_font(self.settings.code_font)
+
     # --------------------------------------------------------------- tabs -- #
     def _active_tab(self):
         idx = self.notebook.get_current_page()
@@ -262,7 +277,8 @@ class NotebookWindow(Gtk.Window):
     def _new_tab(self, focus=True):
         """Create, append, and (optionally) switch to a new empty tab."""
         tab = EditorTab(on_changed=self._on_tab_changed,
-                        on_close=self._close_tab)
+                        on_close=self._close_tab,
+                        code_font=self.settings.code_font)
         tab.apply_font(self.settings.editor_font)
         self._tabs.append(tab)
         idx = self.notebook.append_page(tab.widget, tab.tab_label)
@@ -352,12 +368,13 @@ class NotebookWindow(Gtk.Window):
 
     def _reload_sidebar(self):
         self.sidebar_store.clear()
-        # Top segment: "All Notes".
-        self.sidebar_store.append(None, ["All Notes", "", True])
-        # Bottom segment: immediate subfolders.
+        # Top segment: "All Notes". Row = [icon, label, folder_name, is_all].
+        self.sidebar_store.append(
+            None, ["emblem-documents", "All Notes", "", True])
+        # Bottom segment: immediate subfolders, each with a folder icon.
         if self.root_folder:
             for sub in model.immediate_subfolders(self.root_folder):
-                self.sidebar_store.append(None, [sub, sub, False])
+                self.sidebar_store.append(None, ["folder", sub, sub, False])
         # Select "All Notes" by default.
         self.sidebar_view.get_selection().select_path(Gtk.TreePath.new_first())
 
@@ -416,11 +433,11 @@ class NotebookWindow(Gtk.Window):
         model_, treeiter = selection.get_selected()
         if treeiter is None:
             return
-        is_all = model_[treeiter][2]
+        is_all = model_[treeiter][3]
         if is_all:
             self.current_subfolder = ALL_NOTES
         else:
-            self.current_subfolder = model_[treeiter][1]
+            self.current_subfolder = model_[treeiter][2]
         self._reload_notelist()
 
     def on_note_selection_changed(self, selection):
@@ -451,13 +468,42 @@ class NotebookWindow(Gtk.Window):
         note_path = self.note_store[treeiter][1]
 
         menu = Gtk.Menu()
-        item = Gtk.MenuItem(label="Open in new tab")
-        item.connect("activate",
-                     lambda _i: self._load_note_in_new_tab(model.Note(note_path)))
-        menu.append(item)
+
+        item_open = Gtk.MenuItem(label="Open in new tab")
+        item_open.connect(
+            "activate",
+            lambda _i: self._load_note_in_new_tab(model.Note(note_path)))
+        menu.append(item_open)
+
+        menu.append(Gtk.SeparatorMenuItem())
+
+        item_copy = Gtk.MenuItem(label="Copy full path")
+        item_copy.connect("activate",
+                          lambda _i: self._copy_path_to_clipboard(note_path))
+        menu.append(item_copy)
+
+        item_browse = Gtk.MenuItem(label="Show in file browser")
+        item_browse.connect("activate",
+                            lambda _i: self._show_in_file_browser(note_path))
+        menu.append(item_browse)
+
         menu.show_all()
         menu.popup_at_pointer(event)
         return True
+
+    def _copy_path_to_clipboard(self, path):
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        clipboard.set_text(path, -1)
+        clipboard.store()
+
+    def _show_in_file_browser(self, path):
+        """Open the file's containing folder in the default file manager."""
+        folder = os.path.dirname(path)
+        uri = GLib.filename_to_uri(folder, None)
+        try:
+            Gtk.show_uri_on_window(self, uri, Gdk.CURRENT_TIME)
+        except GLib.Error as exc:
+            self._error_dialog(f"Could not open file browser:\n{exc}")
 
     def on_tab_switched(self, _notebook, _page, _page_num):
         # GTK fires this during construction too; guard via _tabs presence.
@@ -540,6 +586,18 @@ class NotebookWindow(Gtk.Window):
                 self.settings.set_editor_font(chosen)
                 self.settings.save()
                 self._apply_editor_font()
+        dialog.destroy()
+
+    def on_choose_code_font(self, _widget):
+        dialog = Gtk.FontChooserDialog(title="Set Code Font", parent=self)
+        dialog.set_font(self.settings.code_font)
+        dialog.set_preview_text("def hello(): return `inline` # 0123")
+        if dialog.run() == Gtk.ResponseType.OK:
+            chosen = dialog.get_font()
+            if chosen:
+                self.settings.set_code_font(chosen)
+                self.settings.save()
+                self._apply_code_font()
         dialog.destroy()
 
     def on_sort_changed(self, widget, mode):

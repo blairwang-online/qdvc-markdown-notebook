@@ -33,6 +33,7 @@ except ImportError:  # pragma: no cover - exercised only without PyYAML
 
 # Defaults that match the editor's previous hard-coded behaviour.
 DEFAULT_EDITOR_FONT = "monospace 11"
+DEFAULT_CODE_FONT = "monospace 11"
 SCHEMA_VERSION = 1
 MAX_RECENT = 10
 
@@ -82,6 +83,7 @@ class Settings:
 
     def __init__(self):
         self.editor_font = DEFAULT_EDITOR_FONT
+        self.code_font = DEFAULT_CODE_FONT
         self.recent_folders = []
         self._extra = {}  # forward-compatibility: unrecognised top-level keys
 
@@ -116,12 +118,16 @@ class Settings:
         if isinstance(font, str) and font.strip():
             self.editor_font = font
 
+        code_font = data.get("code_font")
+        if isinstance(code_font, str) and code_font.strip():
+            self.code_font = code_font
+
         recents = data.get("recent_folders")
         if isinstance(recents, list):
             self.recent_folders = [r for r in recents if isinstance(r, str)]
 
         # Preserve any keys we don't recognise (and our known ones are filtered).
-        known = {"version", "editor_font", "recent_folders"}
+        known = {"version", "editor_font", "code_font", "recent_folders"}
         self._extra = {k: v for k, v in data.items() if k not in known}
 
     # ------------------------------------------------------------ saving -- #
@@ -129,6 +135,7 @@ class Settings:
         d = {
             "version": SCHEMA_VERSION,
             "editor_font": self.editor_font,
+            "code_font": self.code_font,
             "recent_folders": list(self.recent_folders),
         }
         d.update(self._extra)  # round-trip forward-compatible keys
@@ -156,6 +163,10 @@ class Settings:
     def set_editor_font(self, font_str):
         if isinstance(font_str, str) and font_str.strip():
             self.editor_font = font_str
+
+    def set_code_font(self, font_str):
+        if isinstance(font_str, str) and font_str.strip():
+            self.code_font = font_str
 
     def add_recent_folder(self, folder):
         """
