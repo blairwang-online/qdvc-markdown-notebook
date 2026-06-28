@@ -4,9 +4,27 @@ Technical notes for anyone (human or AI) maintaining `qdvc_markdown_notebook.py`
 
 ## 1. Overview
 
-Single-file GTK 3 / PyGObject desktop application. No build step, no package,
-no external Python dependencies beyond `gi` (PyGObject). It edits markdown files
-**in place** on disk; there is no database, index, or cache.
+A small GTK 3 / PyGObject desktop application. No build step, no external Python
+dependencies beyond `gi` (PyGObject). It edits markdown files **in place** on
+disk; there is no database, index, or cache.
+
+The code is organised as a thin entry-point script plus an internal package,
+following an MVC-flavoured layering (adapted for GTK, where view and controller
+are necessarily intertwined):
+
+```
+qdvc_markdown_notebook.py        # entry point: argv parsing, builds window, Gtk.main()
+qdvcmdnb_lib/
+    __init__.py
+    config.py                    # constants, sort modes, ALL_NOTES sentinel (no GTK, no I/O)
+    model.py                     # data layer: Note + filesystem + disk I/O (no GTK)
+    highlighter.py               # MarkdownHighlighter (GTK TextBuffer tagging)
+    window.py                    # NotebookWindow: view + controller
+```
+
+The key boundary: **`window.py` never touches the filesystem directly.** All
+disk reads/writes/creation go through `model.py`. `config.py` and `model.py`
+import no GTK at all and are unit-testable without a display.
 
 Run modes:
 
@@ -14,6 +32,9 @@ Run modes:
 python3 qdvc_markdown_notebook.py /path/to/data   # sys.argv[1] = root folder
 python3 qdvc_markdown_notebook.py                 # empty; user opens via Ctrl+O
 ```
+
+Run from the directory containing both the script and `qdvcmdnb_lib/` (the
+script imports the package by name).
 
 ## 2. Runtime dependencies
 
@@ -27,9 +48,14 @@ highlighting is done with regexes against a `Gtk.TextBuffer` and tag table.
 
 ## 3. Architecture
 
-The whole program lives in one module. Three logical parts:
+Four logical parts, one per module:
 
-### 3.1 `MarkdownHighlighter`
+### 3.0 `config.py`
+Plain constants only — `APP_NAME`, `MARKDOWN_EXTENSIONS`, the `SORT_*` mode
+strings, and the `ALL_NOTES` sentinel. No GTK, no I/O, so it is safe to import
+from anywhere. `ALL_NOTES` is an `object()`; compare with `is`, never `==`.
+
+### 3.1 `highlighter.py` — `MarkdownHighlighter`
 - Owns the editor `Gtk.TextBuffer`'s tag table and applies colour/weight tags.
 - `_make_tags()` defines tags once (idempotent via `table.lookup`).
 - `highlight()` clears all tags over the whole buffer and re-applies them. It is
@@ -44,19 +70,37 @@ The whole program lives in one module. Three logical parts:
   of each line start, `+1` per line for the stripped newline. If you change the
   splitting, keep this accounting correct or tags will land on wrong ranges.
 
-### 3.2 Data model
+### 3.2 `model.py` — data layer (no GTK)
 - `Note` — a thin wrapper over a file path; caches `name` and `mtime`.
   `display_name()` strips a known markdown extension for the list label.
-- `MARKDOWN_EXTENSIONS` — the set of recognised extensions (includes `.txt`).
+- `is_markdown(filename)` — extension check against `MARKDOWN_EXTENSIONS`.
 - `collect_notes(folder)` — recursive `os.walk`; returns all markdown files at
   **any** depth. This is how both "All Notes" and the per-subfolder view get
   their contents, which implements the spec's "aggregate deeper levels to the
   parent subfolder" rule: selecting a top-level subfolder shows everything under
   it recursively.
 - `immediate_subfolders(root)` — only **one** level down, hidden dirs excluded.
+- `sort_notes(notes, sort_mode)` — returns a new sorted list per the `SORT_*`
+  mode. (Moved out of the window during the refactor so sorting is testable.)
+- Disk I/O: `read_note`, `write_note`, `unique_note_path`, `create_empty_note`.
+  These **raise** `OSError`/`UnicodeDecodeError` on failure; the window catches
+  and shows the error dialog. `write_note` refreshes the note's `mtime`. Writes
+  are not atomic (see §6).
 
-### 3.3 `NotebookWindow` (the controller + view)
+### 3.3 `window.py` — `NotebookWindow` (view + controller)
 Key state attributes:
+- `root_folder` — absolute path of the open data folder, or `None`.
+- `current_subfolder` — either the sentinel `ALL_NOTES` or a subfolder **name**
+  (relative to `root_folder`).
+- `current_note` — the `Note` open in the editor, or `None`.
+- `sort_mode` — one of `SORT_ALPHA`, `SORT_DATE_NEW`, `SORT_DATE_OLD`.
+- `_dirty` — unsaved-changes flag.
+- `_loading` — guard set while programmatically setting buffer text so the
+  `changed` handler doesn't mark the buffer dirty or re-highlight spuriously.
+
+Note: inside the two selection handlers the local variable for the GTK model is
+named `model_` (trailing underscore) to avoid shadowing the imported `model`
+module.
 - `root_folder` — absolute path of the open data folder, or `None`.
 - `current_subfolder` — either the sentinel `ALL_NOTES` or a subfolder **name**
   (relative to `root_folder`).
@@ -124,11 +168,32 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 
 ## 8. Testing
 
-There is no automated test suite. Minimum manual smoke test:
+There is no formal test suite yet, but the refactor makes the model layer
+testable without a display, since `config.py` and `model.py` import no GTK.
 
-1. `python3 -m py_compile qdvc_markdown_notebook.py` — syntax check.
-2. Launch with a sample folder; confirm sidebar lists subfolders one level deep.
-3. Select All Notes vs a subfolder; confirm counts in the status bar.
-4. Create, edit, save a note; reopen to confirm persistence.
-5. Switch sort modes; confirm ordering and that the open note stays selected.
-6. Edit without saving, then switch notes / quit; confirm the unsaved prompt.
+Syntax-check everything:
+
+```bash
+python3 -m py_compile qdvc_markdown_notebook.py qdvcmdnb_lib/*.py
+```
+
+The data layer can be exercised directly, e.g.:
+
+```python
+from qdvcmdnb_lib import model, config
+notes = model.collect_notes("/some/folder")
+ordered = model.sort_notes(notes, config.SORT_DATE_NEW)
+```
+
+This is a good place to add a real `tests/` directory (pytest) covering
+`collect_notes`, `immediate_subfolders`, `sort_notes`, and the
+`unique_note_path`/`create_empty_note`/`read_note`/`write_note` roundtrip — none
+of which need GTK.
+
+Manual smoke test (needs GTK installed):
+
+1. Launch with a sample folder; confirm sidebar lists subfolders one level deep.
+2. Select All Notes vs a subfolder; confirm counts in the status bar.
+3. Create, edit, save a note; reopen to confirm persistence.
+4. Switch sort modes; confirm ordering and that the open note stays selected.
+5. Edit without saving, then switch notes / quit; confirm the unsaved prompt.
