@@ -26,7 +26,7 @@ from .config import (
     NODE_SUBFOLDERS,
     NODE_SUBFOLDER,
 )
-from .settings import Settings
+from .settings import Settings, icon_set_files
 from .editortab import EditorTab
 from .preferences import PreferencesDialog
 
@@ -43,13 +43,22 @@ class NotebookWindow(Gtk.Window):
         self.set_icon_name("accessories-text-editor")
 
         self.settings = Settings.load()
+        # Apply a custom icon set (if configured) before anything else shows, so
+        # the window/taskbar icon reflects it. Falls back silently to the stock
+        # icon on any problem.
+        self._apply_icon_set()
 
         self.root_folder = None
         # Sidebar selection state: a node kind plus, for NODE_SUBFOLDER, the name.
         self.current_node = NODE_ALL_NOTES
         self.current_subfolder = None     # subfolder name when current_node is
                                           # NODE_SUBFOLDER, else None
+        # Seed the sort mode from settings when "remember sort order" is on,
+        # validating against the known modes.
         self.sort_mode = SORT_ALPHA
+        if self.settings.remember_sort and self.settings.sort_mode in (
+                SORT_ALPHA, SORT_DATE_NEW, SORT_DATE_OLD):
+            self.sort_mode = self.settings.sort_mode
         self._note_select_guard = False   # suppress reselection feedback loops
         self.read_only = True             # (#1) start in read-only mode
         self.preview_mode = False         # rendered-markdown preview (all tabs)
@@ -67,8 +76,16 @@ class NotebookWindow(Gtk.Window):
         self._apply_read_only()
         self._rebuild_recent_menu()
 
+        # Reflect a persisted/restored sort mode in the View-menu radio items
+        # (without re-triggering a reload, which the toggle handler guards).
+        item = self._sort_items.get(self.sort_mode)
+        if item is not None and not item.get_active():
+            item.set_active(True)
+
         if root_folder:
             self.open_folder(os.path.abspath(root_folder))
+        elif self.settings.restore_session and self.settings.last_workspace:
+            self._restore_last_session()
 
         # Don't let the first toolbar button take initial keyboard focus (it
         # shows a focus ring / "highlight" on startup otherwise). Put focus on
@@ -216,6 +233,13 @@ class NotebookWindow(Gtk.Window):
                                          group=mi_alpha)
         mi_old_first.connect("toggled", self.on_sort_changed, SORT_DATE_OLD)
         view_menu.append(mi_old_first)
+
+        # Keep references so a restored/persisted sort mode can be reflected.
+        self._sort_items = {
+            SORT_ALPHA: mi_alpha,
+            SORT_DATE_NEW: mi_new_first,
+            SORT_DATE_OLD: mi_old_first,
+        }
 
         menubar.append(view_item)
 
@@ -481,6 +505,68 @@ class NotebookWindow(Gtk.Window):
         return box
 
     # ----------------------------------------------------------- settings -- #
+    def _apply_icon_set(self):
+        """
+        Apply a custom icon set from settings.icon_set_dir, if configured and
+        valid. We register the PNGs/SVG under a private icon name in the default
+        Gtk.IconTheme (via add_resource_path is not applicable for loose files,
+        so we use a Gtk.IconFactory-free approach: load the best PNG/SVG as a
+        Pixbuf and set it as the window + default window icon list). Any problem
+        falls back silently to the stock "accessories-text-editor" icon.
+        """
+        files = icon_set_files(self.settings.icon_set_dir)
+        if not files:
+            # No custom set: ensure the stock icon is in force.
+            self.set_icon_name("accessories-text-editor")
+            return
+        from gi.repository import GdkPixbuf
+        pixbufs = []
+        # Prefer the SVG (scalable) first if present, then each PNG size.
+        sources = []
+        if "scalable" in files:
+            sources.append(files["scalable"])
+        for size in sorted(k for k in files if isinstance(k, int)):
+            sources.append(files[size])
+        for path in sources:
+            try:
+                pixbufs.append(GdkPixbuf.Pixbuf.new_from_file(path))
+            except GLib.Error:
+                continue  # skip an unreadable/invalid image
+        if pixbufs:
+            try:
+                self.set_icon_list(pixbufs)
+                Gtk.Window.set_default_icon_list(pixbufs)
+                return
+            except (GLib.Error, TypeError):
+                pass
+        # Fallback if nothing usable loaded.
+        self.set_icon_name("accessories-text-editor")
+
+    def _restore_last_session(self):
+        """
+        Reopen the last workspace (if it still exists) and the notes that were
+        open, one per tab. Invalid/missing entries are skipped. Used on startup
+        when "restore session" is enabled and no folder was given on the CLI.
+        """
+        folder = self.settings.last_workspace
+        if not folder or not os.path.isdir(folder):
+            return
+        self.open_folder(os.path.abspath(folder))
+        notes = [p for p in self.settings.last_open_notes
+                 if isinstance(p, str) and os.path.isfile(p)]
+        if not notes:
+            return
+        # First note replaces the initial empty tab; the rest open new tabs.
+        first = True
+        for path in notes:
+            if first:
+                self._load_note_in_active_tab(model.Note(path))
+                first = False
+            else:
+                self._load_note_in_new_tab(model.Note(path))
+        if self._tabs:
+            self.notebook.set_current_page(0)
+
     def _apply_editor_font(self):
         """Apply the editor font from settings to every open tab."""
         for tab in self._tabs:
@@ -501,6 +587,11 @@ class NotebookWindow(Gtk.Window):
         for tab in self._tabs:
             tab.apply_editor_line_spacing(self.settings.editor_line_spacing)
             tab.apply_preview_line_spacing(self.settings.preview_line_spacing)
+
+    def _apply_tab_title_length(self):
+        """Apply the configured tab-title length to every open tab."""
+        for tab in self._tabs:
+            tab.set_tab_title_length(self.settings.tab_title_length)
 
     # ------------------------------------------------------- read-only -- #
     def _apply_read_only(self):
@@ -592,7 +683,9 @@ class NotebookWindow(Gtk.Window):
         """Create, append, and (optionally) switch to a new empty tab."""
         tab = EditorTab(on_changed=self._on_tab_changed,
                         on_close=self._close_tab,
-                        code_font=self.settings.code_font)
+                        code_font=self.settings.code_font,
+                        tab_title_length=self.settings.tab_title_length,
+                        on_context_menu=self._on_tab_context_menu)
         tab.apply_font(self.settings.editor_font)
         tab.apply_preview_font(self.settings.preview_font)
         tab.apply_editor_line_spacing(self.settings.editor_line_spacing)
@@ -934,29 +1027,170 @@ class NotebookWindow(Gtk.Window):
         treeiter = self.note_store.get_iter(path)
         note_path = self.note_store[treeiter][1]
 
+        menu = self._build_note_context_menu(note_path, include_locate=False)
+        menu.popup_at_pointer(event)
+        return True
+
+    def _on_tab_context_menu(self, tab, event):
+        """
+        Right-click on a tab label: show the same context menu as a pane-2
+        right-click, plus a "Locate in subfolders" item at the top. No-op for a
+        tab with no note open (guarded in EditorTab).
+        """
+        if tab.note is None:
+            return
+        menu = self._build_note_context_menu(
+            tab.note.path, include_locate=True, tab=tab)
+        menu.popup_at_pointer(event)
+
+    def _build_note_context_menu(self, note_path, include_locate=False,
+                                 tab=None):
+        """
+        Build the shared context menu for a note (used by both pane-2 right-click
+        and tab right-click). Several items carry leading icons. When
+        `include_locate` is True an extra "Locate in subfolders" item is added at
+        the top (used from a tab, where `tab` is that EditorTab) which reveals
+        the note in panes 1 and 2.
+        """
         menu = Gtk.Menu()
 
-        item_open = Gtk.MenuItem(label="Open in new tab")
+        if include_locate:
+            item_locate = self._icon_menu_item("Locate in subfolders",
+                                                "edit-find")
+            item_locate.connect(
+                "activate",
+                lambda _i: self._locate_note_in_panes(note_path))
+            menu.append(item_locate)
+            menu.append(Gtk.SeparatorMenuItem())
+
+        item_open = self._icon_menu_item("Open in new tab", "tab-new")
         item_open.connect(
             "activate",
             lambda _i: self._load_note_in_new_tab(model.Note(note_path)))
         menu.append(item_open)
 
+        # "Move to subfolder" → a submenu listing every subfolder of the
+        # workspace (plus the top level). Confirms before moving.
+        item_move = self._icon_menu_item("Move to subfolder", "folder-move")
+        item_move.set_submenu(self._build_move_submenu(note_path, tab))
+        # Only meaningful with a workspace open.
+        item_move.set_sensitive(bool(self.root_folder))
+        menu.append(item_move)
+
         menu.append(Gtk.SeparatorMenuItem())
 
-        item_copy = Gtk.MenuItem(label="Copy full path")
+        item_copy = self._icon_menu_item("Copy full path", "edit-copy")
         item_copy.connect("activate",
                           lambda _i: self._copy_path_to_clipboard(note_path))
         menu.append(item_copy)
 
-        item_browse = Gtk.MenuItem(label="Show in file browser")
+        item_browse = self._icon_menu_item("Show in file browser",
+                                           "system-file-manager")
         item_browse.connect("activate",
                             lambda _i: self._show_in_file_browser(note_path))
         menu.append(item_browse)
 
         menu.show_all()
-        menu.popup_at_pointer(event)
-        return True
+        return menu
+
+    def _build_move_submenu(self, note_path, tab):
+        """Submenu of destination subfolders for "Move to subfolder"."""
+        submenu = Gtk.Menu()
+        if not self.root_folder:
+            mi = Gtk.MenuItem(label="(open a workspace first)")
+            mi.set_sensitive(False)
+            submenu.append(mi)
+            submenu.show_all()
+            return submenu
+
+        cur_dir = os.path.abspath(os.path.dirname(note_path))
+        for rel in model.all_subfolders(self.root_folder):
+            dest = (self.root_folder if rel == ""
+                    else os.path.join(self.root_folder, rel))
+            label = "(top level)" if rel == "" else rel
+            mi = Gtk.MenuItem(label=label)
+            # Disable the folder the note already lives in.
+            if os.path.abspath(dest) == cur_dir:
+                mi.set_sensitive(False)
+            else:
+                mi.connect(
+                    "activate",
+                    lambda _i, d=dest, lbl=label: self._move_note_to(
+                        note_path, d, lbl, tab))
+            submenu.append(mi)
+        submenu.show_all()
+        return submenu
+
+    def _move_note_to(self, note_path, dest_folder, label, tab):
+        """Confirm, then move the note into `dest_folder` and refresh UI."""
+        name = os.path.basename(note_path)
+        if not self._confirm(
+                "Move this note?",
+                f"\u201c{name}\u201d will be moved to \u201c{label}\u201d."):
+            return
+        # If the note is open in a tab, move via that tab's Note so its state
+        # (path, title) updates in place; otherwise use a throwaway Note.
+        note = None
+        owning_tab = None
+        for t in self._tabs:
+            if t.note is not None and os.path.abspath(t.note.path) == \
+                    os.path.abspath(note_path):
+                note = t.note
+                owning_tab = t
+                break
+        if note is None:
+            note = model.Note(note_path)
+        try:
+            new_path = model.move_note(note, dest_folder)
+        except OSError as exc:
+            self._error_dialog(f"Could not move note:\n{exc}")
+            return
+        if owning_tab is not None:
+            owning_tab._refresh_title()
+        self._reload_sidebar()
+        self._reload_notelist(select_path=new_path)
+        self.update_status()
+
+    def _locate_note_in_panes(self, note_path):
+        """
+        Reveal `note_path` in the sidebar (pane 1) and note list (pane 2):
+        select the subfolder that contains it (or All Notes if it sits at the
+        workspace root or outside any immediate subfolder), then select the row.
+        """
+        if not self.root_folder:
+            return
+        note_dir = os.path.abspath(os.path.dirname(note_path))
+        root = os.path.abspath(self.root_folder)
+        # Determine the immediate subfolder (first path component under root)
+        # that contains the note, if any.
+        target_node = NODE_ALL_NOTES
+        target_sub = None
+        try:
+            rel = os.path.relpath(note_dir, root)
+        except ValueError:
+            rel = ""
+        if rel and not rel.startswith(".."):
+            first = rel.split(os.sep)[0]
+            if first and first != ".":
+                target_sub = first
+                target_node = NODE_SUBFOLDER
+
+        # Select the matching sidebar row (which reloads the note list via its
+        # selection handler), then select the note row in pane 2.
+        self._select_sidebar_node(target_node, target_sub)
+        self._reload_notelist(select_path=note_path)
+
+    def _select_sidebar_node(self, node_kind, subfolder=None):
+        """Programmatically select a sidebar row by kind (and subfolder name)."""
+        def _match(model_, _path, treeiter):
+            if model_[treeiter][2] != node_kind:
+                return False
+            if node_kind == NODE_SUBFOLDER and model_[treeiter][3] != subfolder:
+                return False
+            self.sidebar_view.expand_to_path(model_.get_path(treeiter))
+            self.sidebar_view.get_selection().select_iter(treeiter)
+            return True
+        self.sidebar_store.foreach(_match)
 
     def _copy_path_to_clipboard(self, path):
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
@@ -1104,6 +1338,8 @@ class NotebookWindow(Gtk.Window):
         self._apply_preview_font()
         self._apply_line_spacing()
         self._apply_toolbar_style()
+        self._apply_tab_title_length()
+        self._apply_icon_set()
 
     def on_about(self, _widget):
         dialog = Gtk.AboutDialog(transient_for=self, modal=True)
@@ -1117,6 +1353,10 @@ class NotebookWindow(Gtk.Window):
     def on_sort_changed(self, widget, mode):
         if widget.get_active():
             self.sort_mode = mode
+            # Persist the choice when "remember sort order" is enabled.
+            if self.settings.remember_sort:
+                self.settings.set_sort_mode(mode)
+                self.settings.save()
             tab = self._active_tab()
             keep = tab.note.path if (tab and tab.note) else None
             self._reload_notelist(select_path=keep)
@@ -1144,12 +1384,25 @@ class NotebookWindow(Gtk.Window):
     def on_quit(self, _widget):
         if self._confirm_close_all() is False:
             return
+        self._save_session()
         Gtk.main_quit()
 
     def _on_delete_event(self, _widget, _event):
         if self._confirm_close_all() is False:
             return True  # cancel close
+        self._save_session()
         return False
+
+    def _save_session(self):
+        """
+        Persist the current workspace and the set of open notes so they can be
+        restored next launch (only meaningful when "restore session" is on, but
+        we record it regardless so toggling the option later just works).
+        """
+        open_notes = [tab.note.path for tab in self._tabs
+                      if tab.note is not None]
+        self.settings.set_last_session(self.root_folder, open_notes)
+        self.settings.save()
 
     def _confirm_close_all(self):
         """Prompt for every dirty tab before quitting. False cancels the quit."""

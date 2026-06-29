@@ -266,3 +266,41 @@ def rename_note(note, new_basename, ext=".md"):
     note.path = target
     note.name = os.path.basename(target)
     return target
+
+
+def move_note(note, dest_folder):
+    """
+    Move `note` into `dest_folder`, keeping its filename and avoiding collisions
+    via unique_note_path. Updates the Note's path/name in place and returns the
+    new path. A no-op (returns the current path) if it already lives there.
+    May raise OSError.
+    """
+    if not os.path.isdir(dest_folder):
+        raise OSError(f"Not a folder: {dest_folder}")
+    if os.path.abspath(os.path.dirname(note.path)) == os.path.abspath(dest_folder):
+        return note.path
+    base, ext = os.path.splitext(note.name)
+    target = unique_note_path(dest_folder, base=base, ext=ext or ".md")
+    os.rename(note.path, target)
+    note.path = target
+    note.name = os.path.basename(target)
+    return target
+
+
+def all_subfolders(root):
+    """
+    Return a sorted list of every subfolder under `root` at any depth, as paths
+    relative to `root` (e.g. "work", "work/2026"). Hidden directories (and any
+    of their descendants) are excluded. Used to build the "Move to subfolder"
+    submenu, so the root itself is included first as "" (meaning the top level).
+    """
+    results = [""]
+    for cur, dirs, _files in os.walk(root):
+        # Prune hidden directories in place so we don't descend into them.
+        dirs[:] = sorted((d for d in dirs if not d.startswith(".")),
+                         key=str.lower)
+        for d in dirs:
+            full = os.path.join(cur, d)
+            rel = os.path.relpath(full, root)
+            results.append(rel)
+    return results

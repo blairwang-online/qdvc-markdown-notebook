@@ -21,7 +21,9 @@ from . import pango_markdown
 from .highlighter import MarkdownHighlighter
 
 UNTITLED_LABEL = "Untitled"
-MAX_TAB_TITLE = 12  # characters before truncation with an ellipsis
+MAX_TAB_TITLE = 12  # default characters before truncation (configurable in
+                    # Preferences; the window passes the user's choice in)
+TAB_SPACES = 4      # spaces a Tab key expands to in edit mode
 
 
 class EditorTab:
@@ -36,15 +38,23 @@ class EditorTab:
         dirty       True if there are unsaved edits
     """
 
-    def __init__(self, on_changed, on_close, code_font="monospace 11"):
+    def __init__(self, on_changed, on_close, code_font="monospace 11",
+                 tab_title_length=MAX_TAB_TITLE, on_context_menu=None):
         """
         on_changed(tab): called when this tab's buffer changes (not during
                          programmatic loads).
         on_close(tab):   called when the tab's close button is clicked.
         code_font:       Pango font-description string for code spans/blocks.
+        tab_title_length: characters of the title shown before truncation.
+        on_context_menu(tab, event): called on a right-click of the tab label
+                         (None disables it). The window uses it to show the same
+                         context menu as a pane-2 right-click, plus "Locate in
+                         subfolders".
         """
         self._on_changed = on_changed
         self._on_close = on_close
+        self._tab_title_length = int(tab_title_length)
+        self._on_context_menu = on_context_menu
 
         self.note = None
         self.dirty = False
@@ -79,6 +89,8 @@ class EditorTab:
             "search_match", background="#fff176")
         self._search_highlight = None
         self.text_buffer.connect("changed", self._buffer_changed)
+        # Convert a Tab key press in edit mode to TAB_SPACES spaces.
+        self.text_view.connect("key-press-event", self._on_textview_key_press)
 
         editor_scroll.add(self.text_view)
         self.widget.add_named(editor_scroll, "editor")
@@ -107,6 +119,14 @@ class EditorTab:
         self.tab_label = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
                                  spacing=4)
         self._title_label = Gtk.Label(label=UNTITLED_LABEL)
+        # The title sits in an EventBox so it can receive button-press events
+        # (a plain Gtk.Box/Label has no input window). Right-clicking it raises
+        # the tab context menu via the on_context_menu callback.
+        self._title_event_box = Gtk.EventBox()
+        self._title_event_box.set_visible_window(False)
+        self._title_event_box.add(self._title_label)
+        self._title_event_box.connect("button-press-event",
+                                      self._on_tab_label_button_press)
 
         close_btn = Gtk.Button()
         close_btn.set_relief(Gtk.ReliefStyle.NONE)
@@ -116,12 +136,22 @@ class EditorTab:
         close_btn.set_tooltip_text("Close tab")
         close_btn.connect("clicked", lambda _b: self._on_close(self))
 
-        self.tab_label.pack_start(self._title_label, True, True, 0)
+        self.tab_label.pack_start(self._title_event_box, True, True, 0)
         self.tab_label.pack_start(close_btn, False, False, 0)
         self.tab_label.show_all()
 
         self._refresh_title()
         self._update_view_mode()
+
+    def _on_tab_label_button_press(self, _widget, event):
+        """Right-click on the tab title → tab context menu (if a callback is
+        set and this tab has a note open)."""
+        if event.button != 3:
+            return False
+        if self._on_context_menu is None or self.note is None:
+            return False
+        self._on_context_menu(self, event)
+        return True
 
     # --------------------------------------------------- placeholder ----- #
     def _build_placeholder(self):
@@ -168,6 +198,27 @@ class EditorTab:
             self.preview_buffer.set_text(self.get_content())
 
     # --------------------------------------------------------------- API -- #
+    def _on_textview_key_press(self, _view, event):
+        """
+        Expand a Tab keypress to TAB_SPACES spaces while editing. Returns True
+        to swallow the original Tab so focus doesn't jump out of the editor.
+        Shift+Tab and read-only mode are left to the default handler.
+        """
+        from gi.repository import Gdk
+        if event.keyval != Gdk.KEY_Tab:
+            return False
+        if event.state & Gdk.ModifierType.SHIFT_MASK:
+            return False
+        if not self.text_view.get_editable():
+            return False
+        self.text_buffer.insert_at_cursor(" " * TAB_SPACES)
+        return True
+
+    def set_tab_title_length(self, length):
+        """Set the character budget for the tab title and refresh it."""
+        self._tab_title_length = max(1, int(length))
+        self._refresh_title()
+
     def apply_font(self, font_desc_str):
         self.text_view.override_font(Pango.FontDescription(font_desc_str))
 
@@ -291,8 +342,9 @@ class EditorTab:
 
     def _refresh_title(self):
         title = self.title_text()
-        if len(title) > MAX_TAB_TITLE:
-            title = title[:MAX_TAB_TITLE] + "\u2026"
+        limit = getattr(self, "_tab_title_length", MAX_TAB_TITLE)
+        if len(title) > limit:
+            title = title[:limit] + "\u2026"
         if self.dirty:
             title = "*" + title
         self._title_label.set_text(title)

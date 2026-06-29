@@ -6,7 +6,9 @@ tabbed dialog:
 
   * Fonts     — editor font, code font, markdown-preview font, and the editor /
                 preview line spacing.
-  * Interface — toolbar button text placement (beside vs below the icon).
+  * Interface — toolbar button text placement (beside vs below the icon), the
+                tab-title length, a custom application icon set, and the
+                session/sort persistence options.
 
 Behaviour: changes preview live in the app while the dialog is open. The dialog
 has Save and Cancel buttons — Save persists the settings to disk; Cancel (or
@@ -24,6 +26,8 @@ from .settings import (
     TOOLBAR_TEXT_BELOW,
     MIN_LINE_SPACING,
     MAX_LINE_SPACING,
+    MIN_TAB_TITLE_LENGTH,
+    MAX_TAB_TITLE_LENGTH,
 )
 
 
@@ -43,6 +47,10 @@ class PreferencesDialog(Gtk.Dialog):
             "editor_line_spacing": settings.editor_line_spacing,
             "preview_line_spacing": settings.preview_line_spacing,
             "toolbar_style": settings.toolbar_style,
+            "tab_title_length": settings.tab_title_length,
+            "remember_sort": settings.remember_sort,
+            "restore_session": settings.restore_session,
+            "icon_set_dir": settings.icon_set_dir,
         }
 
         self.add_button("_Cancel", Gtk.ResponseType.CANCEL)
@@ -138,11 +146,12 @@ class PreferencesDialog(Gtk.Dialog):
 
     # ---------------------------------------------------- Interface tab -- #
     def _build_interface_tab(self):
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         box.set_border_width(12)
 
-        label = Gtk.Label(label="Toolbar icon text placement:", xalign=0.0)
-        box.add(label)
+        # --- toolbar icon text placement ---
+        tb_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        tb_box.add(Gtk.Label(label="Toolbar icon text placement:", xalign=0.0))
 
         self._radio_below = Gtk.RadioButton.new_with_label_from_widget(
             None, "Below each icon")
@@ -156,15 +165,99 @@ class PreferencesDialog(Gtk.Dialog):
 
         self._radio_below.connect("toggled", self._on_toolbar_style_toggled)
         self._radio_beside.connect("toggled", self._on_toolbar_style_toggled)
+        tb_box.add(self._radio_below)
+        tb_box.add(self._radio_beside)
+        box.add(tb_box)
 
-        box.add(self._radio_below)
-        box.add(self._radio_beside)
+        box.add(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # --- tab title length ---
+        tab_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        tab_row.add(self._label("Tab title length (characters):"))
+        self.tab_title_spin = Gtk.SpinButton.new_with_range(
+            MIN_TAB_TITLE_LENGTH, MAX_TAB_TITLE_LENGTH, 1)
+        self.tab_title_spin.set_value(self.settings.tab_title_length)
+        self.tab_title_spin.set_halign(Gtk.Align.START)
+        self.tab_title_spin.connect("value-changed",
+                                    self._on_tab_title_length_changed)
+        tab_row.add(self.tab_title_spin)
+        box.add(tab_row)
+
+        box.add(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # --- session / sort persistence ---
+        self.chk_remember_sort = Gtk.CheckButton(
+            label="Remember note sort order between sessions")
+        self.chk_remember_sort.set_active(self.settings.remember_sort)
+        self.chk_remember_sort.connect("toggled",
+                                       self._on_remember_sort_toggled)
+        box.add(self.chk_remember_sort)
+
+        self.chk_restore_session = Gtk.CheckButton(
+            label="Reopen last workspace and notes on startup")
+        self.chk_restore_session.set_active(self.settings.restore_session)
+        self.chk_restore_session.connect("toggled",
+                                         self._on_restore_session_toggled)
+        box.add(self.chk_restore_session)
+
+        box.add(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # --- custom icon set ---
+        icon_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        icon_box.add(Gtk.Label(
+            label="Custom application icon set (folder):", xalign=0.0))
+        chooser_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.icon_set_chooser = Gtk.FileChooserButton(
+            title="Choose icon-set folder",
+            action=Gtk.FileChooserAction.SELECT_FOLDER)
+        self.icon_set_chooser.set_hexpand(True)
+        if self.settings.icon_set_dir:
+            self.icon_set_chooser.set_filename(self.settings.icon_set_dir)
+        self.icon_set_chooser.connect("file-set", self._on_icon_set_chosen)
+        chooser_row.pack_start(self.icon_set_chooser, True, True, 0)
+
+        clear_btn = Gtk.Button(label="Clear")
+        clear_btn.set_tooltip_text("Revert to the default app icon")
+        clear_btn.connect("clicked", self._on_icon_set_cleared)
+        chooser_row.pack_start(clear_btn, False, False, 0)
+        icon_box.add(chooser_row)
+
+        hint = Gtk.Label(xalign=0.0)
+        hint.set_markup(
+            "<small>Folder must contain 16x16.png, 22x22.png, 24x24.png, "
+            "32x32.png, 48x48.png, 256x256.png and scalable.svg. Takes full "
+            "effect on next launch.</small>")
+        hint.set_line_wrap(True)
+        icon_box.add(hint)
+        box.add(icon_box)
+
         return box
 
     def _on_toolbar_style_toggled(self, _btn):
         style = (TOOLBAR_TEXT_BESIDE if self._radio_beside.get_active()
                  else TOOLBAR_TEXT_BELOW)
         self.settings.set_toolbar_style(style)
+        self._on_apply()
+
+    def _on_tab_title_length_changed(self, spin):
+        self.settings.set_tab_title_length(spin.get_value_as_int())
+        self._on_apply()
+
+    def _on_remember_sort_toggled(self, btn):
+        self.settings.set_remember_sort(btn.get_active())
+        self._on_apply()
+
+    def _on_restore_session_toggled(self, btn):
+        self.settings.set_restore_session(btn.get_active())
+        self._on_apply()
+
+    def _on_icon_set_chosen(self, chooser):
+        self.settings.set_icon_set_dir(chooser.get_filename() or "")
+        self._on_apply()
+
+    def _on_icon_set_cleared(self, _btn):
+        self.settings.set_icon_set_dir("")
+        self.icon_set_chooser.unselect_all()
         self._on_apply()
 
     # ------------------------------------------------------- run/commit -- #
@@ -186,6 +279,10 @@ class PreferencesDialog(Gtk.Dialog):
             self.settings.set_editor_line_spacing(o["editor_line_spacing"])
             self.settings.set_preview_line_spacing(o["preview_line_spacing"])
             self.settings.set_toolbar_style(o["toolbar_style"])
+            self.settings.set_tab_title_length(o["tab_title_length"])
+            self.settings.set_remember_sort(o["remember_sort"])
+            self.settings.set_restore_session(o["restore_session"])
+            self.settings.set_icon_set_dir(o["icon_set_dir"])
             self._on_apply()
         self.destroy()
 

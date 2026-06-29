@@ -14,6 +14,14 @@ Schema (version 1):
 
     version: 1
     editor_font: "monospace 11"        # any Pango font description string
+    tab_title_length: 12               # chars before a tab title is ellipsised
+    remember_sort: false               # persist the note sort order between runs
+    restore_session: false             # reopen last workspace + notes on startup
+    icon_set_dir: ""                   # folder of custom app icons (see README)
+    sort_mode: alpha                   # persisted sort order (when remember_sort)
+    last_workspace: /home/user/notes   # restored on startup (when restore_session)
+    last_open_notes:                   # note paths reopened (when restore_session)
+      - /home/user/notes/a.md
     recent_folders:                    # most-recent first, capped at MAX_RECENT
       - /home/user/notes
       - /home/user/work/notes
@@ -48,6 +56,27 @@ TOOLBAR_TEXT_BESIDE = "beside"
 TOOLBAR_TEXT_BELOW = "below"
 DEFAULT_TOOLBAR_STYLE = TOOLBAR_TEXT_BELOW
 
+# Tab title length: characters of the note name shown on a tab before it is
+# truncated with an ellipsis. Configurable in Preferences.
+DEFAULT_TAB_TITLE_LENGTH = 12
+MIN_TAB_TITLE_LENGTH = 4
+MAX_TAB_TITLE_LENGTH = 80
+
+# Session restore / sort persistence (booleans, default off to preserve the
+# previous behaviour where neither was remembered between runs).
+DEFAULT_REMEMBER_SORT = False
+DEFAULT_RESTORE_SESSION = False
+
+# Custom icon set: an absolute path to a folder containing 16x16.png, 22x22.png,
+# 24x24.png, 32x32.png, 48x48.png, 256x256.png, and scalable.svg. Empty means
+# "use the stock accessories-text-editor icon".
+DEFAULT_ICON_SET_DIR = ""
+
+# Filenames expected inside a custom icon-set folder. Sizes map a pixel
+# dimension to its PNG; the SVG is the scalable fallback.
+ICON_SET_PNG_SIZES = (16, 22, 24, 32, 48, 256)
+ICON_SET_SVG_NAME = "scalable.svg"
+
 SCHEMA_VERSION = 1
 MAX_RECENT = 10
 
@@ -73,6 +102,28 @@ def config_path():
     return os.path.join(config_dir(), _CONFIG_FILENAME)
 
 
+def icon_set_files(folder):
+    """
+    Given a custom icon-set folder, return a dict mapping each found icon to its
+    absolute path: integer pixel sizes (16, 22, …) to their PNG, plus the key
+    "scalable" for the SVG. Missing files are simply omitted. An empty/false
+    folder, or one that is not a directory, yields an empty dict.
+
+    No GTK here; the window turns these into a Gtk.IconSet / theme additions.
+    """
+    if not folder or not os.path.isdir(folder):
+        return {}
+    found = {}
+    for size in ICON_SET_PNG_SIZES:
+        png = os.path.join(folder, f"{size}x{size}.png")
+        if os.path.isfile(png):
+            found[size] = png
+    svg = os.path.join(folder, ICON_SET_SVG_NAME)
+    if os.path.isfile(svg):
+        found["scalable"] = svg
+    return found
+
+
 def _warn_no_yaml_once():
     global _warned_no_yaml
     if not _warned_no_yaml:
@@ -89,6 +140,22 @@ def _coerce_spacing(value, fallback):
         return fallback
     if isinstance(value, (int, float)):
         return max(MIN_LINE_SPACING, min(MAX_LINE_SPACING, int(value)))
+    return fallback
+
+
+def _coerce_int_range(value, lo, hi, fallback):
+    """Validate an int value clamped to [lo, hi]; reject bools."""
+    if isinstance(value, bool):  # bool is an int subclass; reject it explicitly
+        return fallback
+    if isinstance(value, (int, float)):
+        return max(lo, min(hi, int(value)))
+    return fallback
+
+
+def _coerce_bool(value, fallback):
+    """Validate a boolean value; non-bools fall back to the default."""
+    if isinstance(value, bool):
+        return value
     return fallback
 
 
@@ -111,6 +178,16 @@ class Settings:
         self.editor_line_spacing = DEFAULT_EDITOR_LINE_SPACING
         self.preview_line_spacing = DEFAULT_PREVIEW_LINE_SPACING
         self.toolbar_style = DEFAULT_TOOLBAR_STYLE
+        self.tab_title_length = DEFAULT_TAB_TITLE_LENGTH
+        self.remember_sort = DEFAULT_REMEMBER_SORT
+        self.restore_session = DEFAULT_RESTORE_SESSION
+        self.icon_set_dir = DEFAULT_ICON_SET_DIR
+        # Persisted sort mode (one of the SORT_* strings from config). Stored as
+        # a plain string here to avoid importing config; the window validates it.
+        self.sort_mode = None
+        # Last session's workspace + open note paths, for restore-on-startup.
+        self.last_workspace = None
+        self.last_open_notes = []
         self.recent_folders = []
         self._extra = {}  # forward-compatibility: unrecognised top-level keys
 
@@ -162,6 +239,32 @@ class Settings:
         if toolbar_style in (TOOLBAR_TEXT_BESIDE, TOOLBAR_TEXT_BELOW):
             self.toolbar_style = toolbar_style
 
+        self.tab_title_length = _coerce_int_range(
+            data.get("tab_title_length"), MIN_TAB_TITLE_LENGTH,
+            MAX_TAB_TITLE_LENGTH, self.tab_title_length)
+
+        self.remember_sort = _coerce_bool(
+            data.get("remember_sort"), self.remember_sort)
+        self.restore_session = _coerce_bool(
+            data.get("restore_session"), self.restore_session)
+
+        icon_set = data.get("icon_set_dir")
+        if isinstance(icon_set, str):
+            self.icon_set_dir = icon_set.strip()
+
+        sort_mode = data.get("sort_mode")
+        if isinstance(sort_mode, str) and sort_mode.strip():
+            self.sort_mode = sort_mode
+
+        last_ws = data.get("last_workspace")
+        if isinstance(last_ws, str) and last_ws.strip():
+            self.last_workspace = last_ws
+
+        last_notes = data.get("last_open_notes")
+        if isinstance(last_notes, list):
+            self.last_open_notes = [n for n in last_notes
+                                    if isinstance(n, str)]
+
         recents = data.get("recent_folders")
         if isinstance(recents, list):
             self.recent_folders = [r for r in recents if isinstance(r, str)]
@@ -169,7 +272,9 @@ class Settings:
         # Preserve any keys we don't recognise (and our known ones are filtered).
         known = {"version", "editor_font", "code_font", "preview_font",
                  "editor_line_spacing", "preview_line_spacing",
-                 "toolbar_style", "recent_folders"}
+                 "toolbar_style", "tab_title_length", "remember_sort",
+                 "restore_session", "icon_set_dir", "sort_mode",
+                 "last_workspace", "last_open_notes", "recent_folders"}
         self._extra = {k: v for k, v in data.items() if k not in known}
 
     # ------------------------------------------------------------ saving -- #
@@ -182,6 +287,13 @@ class Settings:
             "editor_line_spacing": self.editor_line_spacing,
             "preview_line_spacing": self.preview_line_spacing,
             "toolbar_style": self.toolbar_style,
+            "tab_title_length": self.tab_title_length,
+            "remember_sort": self.remember_sort,
+            "restore_session": self.restore_session,
+            "icon_set_dir": self.icon_set_dir,
+            "sort_mode": self.sort_mode,
+            "last_workspace": self.last_workspace,
+            "last_open_notes": list(self.last_open_notes),
             "recent_folders": list(self.recent_folders),
         }
         d.update(self._extra)  # round-trip forward-compatible keys
@@ -229,6 +341,34 @@ class Settings:
     def set_toolbar_style(self, style):
         if style in (TOOLBAR_TEXT_BESIDE, TOOLBAR_TEXT_BELOW):
             self.toolbar_style = style
+
+    def set_tab_title_length(self, value):
+        self.tab_title_length = _coerce_int_range(
+            value, MIN_TAB_TITLE_LENGTH, MAX_TAB_TITLE_LENGTH,
+            self.tab_title_length)
+
+    def set_remember_sort(self, value):
+        self.remember_sort = _coerce_bool(value, self.remember_sort)
+
+    def set_restore_session(self, value):
+        self.restore_session = _coerce_bool(value, self.restore_session)
+
+    def set_icon_set_dir(self, path):
+        if isinstance(path, str):
+            self.icon_set_dir = path.strip()
+
+    def set_sort_mode(self, mode):
+        if isinstance(mode, str) and mode.strip():
+            self.sort_mode = mode
+
+    def set_last_session(self, workspace, open_notes):
+        """Record the workspace folder and the open notes for restore."""
+        self.last_workspace = workspace if isinstance(workspace, str) else None
+        if isinstance(open_notes, (list, tuple)):
+            self.last_open_notes = [n for n in open_notes
+                                    if isinstance(n, str)]
+        else:
+            self.last_open_notes = []
 
     def add_recent_folder(self, folder):
         """

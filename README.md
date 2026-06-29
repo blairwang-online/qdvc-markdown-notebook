@@ -119,7 +119,11 @@ Notes:
 - `Icon=accessories-text-editor` is a standard freedesktop icon present on a
   typical GNOME/MATE install (it's the generic text-editor icon, the same family
   Pluma uses). To use your own icon instead, point `Icon=` at an absolute path to
-  a `.png` or `.svg`.
+  a `.png` or `.svg`. Alternatively, set a **custom icon set** in *Edit →
+  Preferences → Interface*: point it at a folder containing `16x16.png`,
+  `22x22.png`, `24x24.png`, `32x32.png`, `48x48.png`, `256x256.png`, and
+  `scalable.svg`. The app then uses those for its window/taskbar icon (it loads
+  them on launch; clear the setting to return to the stock icon).
 - `StartupWMClass=qdvc-markdown-notebook` lets the panel/taskbar match the running
   window to this entry, so it shows the app icon instead of a generic window icon.
   The app sets its program name to `qdvc-markdown-notebook` to match; the app also
@@ -154,6 +158,15 @@ Open *Edit → Preferences* (a tabbed dialog) to configure:
 **Interface tab**
 - **Toolbar icon text placement** — whether toolbar button text appears below or
   beside icons.
+- **Tab title length** — how many characters of a note's name a tab shows before
+  it is truncated with an ellipsis.
+- **Remember note sort order between sessions** — persist the chosen sort order
+  so it is restored next launch.
+- **Reopen last workspace and notes on startup** — automatically reopen the last
+  workspace and the notes that were open, one per tab (when no folder is passed
+  on the command line).
+- **Custom application icon set** — choose a folder of icons to use in place of
+  the stock app icon (see *Desktop integration* below for the required files).
 
 Changes preview live while the dialog is open; **Save** persists them, **Cancel**
 reverts. These are stored in a plain, git-trackable YAML file at
@@ -165,13 +178,18 @@ list of recent workspaces (reopen them from *File → Open recent workspace*).
 Open notes across multiple tabs:
 
 - **Single-click** a note — opens it in the current tab (replacing its content).
-- **Right-click** a note for a menu: *Open in new tab*, *Copy full path*, and
-  *Show in file browser*.
+- **Right-click** a note for a menu: *Open in new tab*, *Move to subfolder*
+  (a submenu of the workspace's subfolders; confirms before moving), *Copy full
+  path*, and *Show in file browser*. Several items carry an icon.
+- **Right-click a tab** for the same menu plus a *Locate in subfolders* item:
+  clicking it reveals the note in the sidebar (pane 1) and note list (pane 2).
+- In **edit mode**, pressing **Tab** in the editor inserts four spaces.
 - **Ctrl+T** — new empty tab. **Ctrl+W** — close the current tab (also the little
   × on each tab).
 - **Ctrl+Tab** / **Ctrl+Shift+Tab** cycle forward/backward through tabs;
   **Alt+1**…**Alt+9** jump straight to a tab.
-- Tabs are titled with the note name (truncated past 12 characters).
+- Tabs are titled with the note name, truncated past a configurable length
+  (default 12 characters; set it in *Edit → Preferences → Interface*).
 - With only one tab open, the tab bar is hidden.
 - A tab with no note shows a placeholder prompting you to select one.
 
@@ -207,4 +225,3 @@ becomes `my-awesome-new-note.md`.
 There's also *Help → About* for version and project information.
 
 See [MAINTENANCE.md](MAINTENANCE.md) for architecture and maintainer notes.
-

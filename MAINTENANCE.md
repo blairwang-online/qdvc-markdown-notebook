@@ -72,13 +72,24 @@ now uses the `NODE_*` kinds instead.)
   font-description strings), `editor_line_spacing` and `preview_line_spacing`
   (ints, pixels of extra inter-line space, clamped to `[MIN_LINE_SPACING,
   MAX_LINE_SPACING]` via `_coerce_spacing`), `toolbar_style` (`"below"` or
-  `"beside"`, the `TOOLBAR_TEXT_*` constants), and `recent_folders`
+  `"beside"`, the `TOOLBAR_TEXT_*` constants), `tab_title_length` (int clamped to
+  `[MIN_TAB_TITLE_LENGTH, MAX_TAB_TITLE_LENGTH]` via `_coerce_int_range`),
+  `remember_sort` and `restore_session` (bools via `_coerce_bool`), `icon_set_dir`
+  (a folder path; `""` means the stock icon), `sort_mode` (a persisted `SORT_*`
+  string, or `None`), `last_workspace` + `last_open_notes` (the previous session's
+  folder and open-note paths, for restore-on-startup), and `recent_folders`
   (most-recent-first list, capped at `MAX_RECENT`). `editor_font` themes the
   editor; `code_font` themes inline/fenced code in both the editor (highlighter)
   and the preview; `preview_font` is the preview body font; the two spacings apply
   to the editor and preview views. Construct via `Settings.load()`, which returns
   sane defaults on a missing/malformed file or any read error — it never raises to
-  the caller.
+  the caller. Mutators (`set_*`) validate the same way as `_apply`;
+  `set_last_session(workspace, notes)` filters the note list to strings.
+- `icon_set_files(folder)` (module-level, no GTK) validates a custom icon-set
+  folder and returns a dict mapping each present pixel size (`ICON_SET_PNG_SIZES`
+  = 16, 22, 24, 32, 48, 256) to its `<n>x<n>.png`, plus `"scalable"` →
+  `scalable.svg`. Missing files are omitted; a false/non-directory path yields
+  `{}`. The window turns this into a window icon list.
 - `save()` writes atomically (temp file + `os.replace`) and returns a bool.
 - `add_recent_folder()` dedups (moves existing to front), prunes directories that
   no longer exist, and caps the list.
@@ -168,6 +179,13 @@ enough" philosophy as the highlighter), not a full CommonMark parser.
   avoid collisions, and updates the `Note`'s `path`/`name`; it is a no-op if the
   name is already correct. All three are pure/testable; the heading check reads
   the tab's **live** buffer, not the file on disk.
+- `move_note(note, dest_folder)` moves a note into another folder, keeping its
+  filename (collision-avoided via `unique_note_path`), updating the `Note` in
+  place; a no-op when it already lives there, raises `OSError` if the destination
+  is not a directory. `all_subfolders(root)` returns every subfolder under `root`
+  at any depth as paths relative to `root`, sorted, with `""` first (the top
+  level); hidden dirs (and their descendants) are pruned. These back the pane-2 /
+  tab **Move to subfolder** submenu.
 
 ### 3.2a `editortab.py` — `EditorTab`
 Encapsulates one tab's editor state, which previously lived directly on the
@@ -181,14 +199,25 @@ window. Each `EditorTab` owns its own `Gtk.TextView`, `Gtk.TextBuffer`,
   when `note is None`, else `"preview"` when `self.preview`, else `"editor"`. It is
   called from `clear()`, `load_note()`, and `set_preview()`. A fresh Ctrl+T tab
   shows the placeholder until a note is loaded.
-- `tab_label` — a horizontal box: a title label + a borderless close button
-  (Caja-style, `window-close` icon at `MENU` size). The title is the note's
-  display name, truncated to `MAX_TAB_TITLE` (12) characters with a trailing
-  ellipsis when longer; a leading `*` marks unsaved changes. Truncation is done
-  in `_refresh_title()` on the string itself (not via Pango width-ellipsize, which
-  depended on allocated width and could clip even short names).
+- `tab_label` — a horizontal box: an `EventBox`-wrapped title label + a
+  borderless close button (Caja-style, `window-close` icon at `MENU` size). The
+  EventBox (with `visible_window=False`) lets the title receive a right-click,
+  which fires the `on_context_menu(tab, event)` callback (the window shows the
+  tab context menu; no-op when the tab has no note). The title is the note's
+  display name, truncated to `_tab_title_length` characters (default
+  `MAX_TAB_TITLE` = 12, overridable per tab and set from
+  `settings.tab_title_length`) with a trailing ellipsis when longer; a leading
+  `*` marks unsaved changes. Truncation is done in `_refresh_title()` on the
+  string itself (not via Pango width-ellipsize, which depended on allocated width
+  and could clip even short names). `set_tab_title_length(n)` updates the budget
+  and refreshes.
+- A `key-press-event` handler on the editor `TextView`
+  (`_on_textview_key_press`) converts a plain **Tab** keypress into `TAB_SPACES`
+  (4) spaces while the view is editable, swallowing the event so focus doesn't
+  jump out; Shift+Tab and read-only mode fall through to the default handler.
 - Callbacks passed in by the window: `on_changed(tab)` (buffer edited, not during
-  a programmatic load) and `on_close(tab)` (close button clicked).
+  a programmatic load), `on_close(tab)` (close button clicked), and
+  `on_context_menu(tab, event)` (right-click on the tab label).
 - API: `load_note(note)` → bool, `save()` → bool (both return False on I/O error
   and leave the dialog to the caller), `clear()`, `get_content()`,
   `apply_font(str)`, `apply_code_font(str)` (also re-renders the preview if
@@ -219,13 +248,17 @@ A modal `Gtk.Dialog` (GNOME2/MATE idiom: "Preferences" under the **Edit** menu)
 with a `Gtk.Notebook` of two tabs. **Fonts**: `Gtk.FontButton`s for editor font,
 code font, and markdown-preview font, plus two `Gtk.SpinButton`s for editor and
 preview line spacing (range `MIN_LINE_SPACING`..`MAX_LINE_SPACING`). **Interface**:
-a radio pair for toolbar text below vs beside icons. It has **Save** and **Cancel**
-buttons. Each control change applies **live** (mutates the shared `Settings` in
-memory and calls the window's `on_apply` to re-theme), but is *not* persisted until
-Save. The dialog snapshots all original values on open (`_original`); `run_modal()`
-runs the dialog and, on Save, calls `settings.save()`, while on Cancel/close it
-restores the snapshot (all six fields) and re-applies (reverting the live preview).
-The window calls `dialog.run_modal()` rather than just constructing it.
+a radio pair for toolbar text below vs beside icons; a `Gtk.SpinButton` for the
+tab-title length (`MIN_TAB_TITLE_LENGTH`..`MAX_TAB_TITLE_LENGTH`); two
+`Gtk.CheckButton`s for *remember sort order* and *restore session*; and a
+`Gtk.FileChooserButton` (+ a Clear button) for the custom icon-set folder. It has
+**Save** and **Cancel** buttons. Each control change applies **live** (mutates the
+shared `Settings` in memory and calls the window's `on_apply` to re-theme), but is
+*not* persisted until Save. The dialog snapshots all original values on open
+(`_original`, now ten fields); `run_modal()` runs the dialog and, on Save, calls
+`settings.save()`, while on Cancel/close it restores the snapshot and re-applies
+(reverting the live preview). The window calls `dialog.run_modal()` rather than
+just constructing it.
 
 ### 3.3 `window.py` — `NotebookWindow` (view + controller)
 The editor area is now a `Gtk.Notebook` of `EditorTab` pages; `self._tabs` is a
@@ -236,6 +269,15 @@ On startup the window centers itself (`set_position(CENTER)`) and sets its icon
 name to `accessories-text-editor`; the entry point also calls
 `Gtk.Window.set_default_icon_name(...)` and `GLib.set_prgname(...)` so the
 panel/taskbar can match the window to the `.desktop` file (its `StartupWMClass`).
+`_apply_icon_set()` then overrides the icon when `settings.icon_set_dir` resolves
+(via `icon_set_files`) to a usable set: it loads the SVG and PNGs as
+`GdkPixbuf.Pixbuf`es and calls `set_icon_list` + `Gtk.Window.set_default_icon_list`,
+falling back silently to the stock icon on any error. `sort_mode` is seeded from
+`settings.sort_mode` when `remember_sort` is on, and the matching View-menu radio
+(`self._sort_items`) is activated after the menu is built. When no folder is given
+on the CLI and `restore_session` is on, `_restore_last_session()` reopens
+`last_workspace` and loads each still-existing `last_open_notes` path (first into
+the initial tab, the rest into new tabs).
 
 Menu items use `_icon_menu_item(label, icon_name)`, which builds a
 `Gtk.ImageMenuItem` (deprecated in GTK3 but the idiomatic MATE-era way to show
@@ -277,8 +319,13 @@ Tab wiring:
   which is what makes the whole tab bar vanish at one tab.
 - `_active_tab()` maps the notebook's current page index to `_tabs`.
 - Ctrl+T → `on_new_tab`; Ctrl+W → `on_close_tab` (both also menu items under
-  File). Right-click in the note list → `on_notelist_button_press` builds a popup
-  with "Open in new tab", "Copy full path", and "Show in file browser".
+  File). Right-click in the note list → `on_notelist_button_press` and right-click
+  on a tab label → `_on_tab_context_menu` both build a popup via the shared
+  `_build_note_context_menu(note_path, include_locate, tab)`: **Open in new tab**,
+  **Move to subfolder** (a submenu from `_build_move_submenu`), **Copy full path**,
+  **Show in file browser**, several with icons. The tab variant passes
+  `include_locate=True`, prepending **Locate in subfolders** (`_locate_note_in_panes`).
+  Move/locate are detailed under control flow below.
 - Quitting/closing the window runs `_confirm_close_all`, which prompts for *every*
   dirty tab before exit.
 
@@ -319,12 +366,17 @@ calls `_apply_editor_font()`, `_apply_code_font()`, `_apply_preview_font()`,
 `_remember_folder()` (which records, saves, and refreshes the recent-workspace
 menu). Font, spacing, and toolbar-style changes flow through the Preferences
 dialog, whose `on_apply` callback (`_apply_preferences`) re-applies the editor
-font, code font, preview font, line spacings, and toolbar style to the live UI.
-`_apply_editor_font` / `_apply_code_font` / `_apply_preview_font` /
-`_apply_line_spacing` iterate **all** tabs; `_apply_toolbar_style` maps
+font, code font, preview font, line spacings, toolbar style, **tab-title length**
+(`_apply_tab_title_length` → `tab.set_tab_title_length` on every tab), and the
+**icon set** (`_apply_icon_set`) to the live UI. `_apply_editor_font` /
+`_apply_code_font` / `_apply_preview_font` / `_apply_line_spacing` /
+`_apply_tab_title_length` iterate **all** tabs; `_apply_toolbar_style` maps
 `settings.toolbar_style` to a `Gtk.ToolbarStyle` (`BOTH` = below, `BOTH_HORIZ` =
 beside) via `_toolbar_style_enum()`. `on_open_recent` opens a folder from the menu
-(handling the case where it has since been deleted).
+(handling the case where it has since been deleted). On quit / window close,
+`_save_session()` records `root_folder` + the open notes' paths into settings and
+saves (so toggling *restore session* later just works); `on_sort_changed` persists
+the new `sort_mode` when *remember sort order* is on.
 
 Note: inside the selection handlers the local variable for the GTK model is
 named `model_` (trailing underscore) to avoid shadowing the imported `model`
@@ -410,11 +462,20 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   tab for unsaved changes (cancelling restores the prior selection via
   `_reselect_active_note`), then `_load_note_in_active_tab` **replaces** the
   active tab's content.
-- Right-click a note → `on_notelist_button_press` builds a popup with: "Open in
-  new tab" (`_load_note_in_new_tab`), "Copy full path" (`_copy_path_to_clipboard`
-  via the `CLIPBOARD` selection), and "Show in file browser"
-  (`_show_in_file_browser`, which converts the parent dir to a `file://` URI with
-  `GLib.filename_to_uri` and opens it via `Gtk.show_uri_on_window`).
+- Right-click a note (pane 2) or a tab label → a shared popup
+  (`_build_note_context_menu`): "Open in new tab" (`_load_note_in_new_tab`),
+  "Move to subfolder" (a submenu of `model.all_subfolders`; `_move_note_to`
+  confirms via `_confirm` then calls `model.move_note`, updating any owning tab's
+  title and reloading the sidebar + list), "Copy full path"
+  (`_copy_path_to_clipboard` via the `CLIPBOARD` selection), and "Show in file
+  browser" (`_show_in_file_browser`, which converts the parent dir to a `file://`
+  URI with `GLib.filename_to_uri` and opens it via `Gtk.show_uri_on_window`). The
+  tab variant adds "Locate in subfolders" (`_locate_note_in_panes`): it finds the
+  immediate subfolder containing the note (or All Notes for a root-level note),
+  selects that sidebar row via `_select_sidebar_node` (which reloads pane 2), then
+  selects the note's row.
+- Tab key in the editor → handled in `EditorTab._on_textview_key_press` (inserts
+  four spaces in edit mode; not a window-level concern).
 - Typing → the tab's own `_buffer_changed` sets its `dirty` flag, re-highlights,
   updates the tab title, and calls back to the window (`_on_tab_changed` →
   `update_status`, which also re-evaluates Slugify sensitivity).
@@ -437,11 +498,14 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   `model.Note`), after `_maybe_warn_unsaved` (cancel aborts the reload); re-applies
   the current search highlight and refreshes the status.
 - Sort change → `on_sort_changed` reloads the list, keeping the active tab's note
-  selected by path.
+  selected by path, and persists `sort_mode` when *remember sort order* is on.
 - Preferences → `on_preferences` opens the dialog and calls `run_modal`; live
   changes preview via `_apply_preferences`, Save persists, Cancel reverts.
 - About → `on_about` shows a `Gtk.AboutDialog`.
-- Quit / window close → `_confirm_close_all` prompts for each dirty tab.
+- Quit / window close → `_confirm_close_all` prompts for each dirty tab, then
+  `_save_session()` records the workspace + open notes for restore.
+- Startup restore → when no CLI folder is given and *restore session* is on,
+  `_restore_last_session()` reopens the last workspace and its open notes.
 - Close workspace → `on_close_workspace` (after `_confirm_close_all`) clears the
   sidebar, note list, and tabs, and drops `root_folder`, returning to the empty
   initial state.
@@ -493,8 +557,8 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   background thread (and/or debounce) to keep the UI responsive.
 - File-system watch (`Gio.FileMonitor`) to auto-refresh on external changes.
 - Per-note word/char count in the status bar.
-- Remember last folder and window geometry (e.g. as more keys in the settings
-  YAML).
+- Remember window geometry (e.g. as more keys in the settings YAML). The last
+  folder + open notes are now restored via `restore_session`; geometry is not.
 
 ## 8. Testing
 
@@ -527,4 +591,3 @@ Manual smoke test (needs GTK installed):
 3. Create, edit, save a note; reopen to confirm persistence.
 4. Switch sort modes; confirm ordering and that the open note stays selected.
 5. Edit without saving, then switch notes / quit; confirm the unsaved prompt.
-
