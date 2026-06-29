@@ -11,7 +11,7 @@ It points at a folder of `.md` files and gives you:
 - **Middle pane** — a search box plus the list of notes for the selected sidebar item.
 - **Right pane** — a monospace editor with lightweight markdown syntax highlighting (no font-size variation).
 
-Plus a menu bar, toolbar (New / Save / Refresh / Slugify / Card view / Read-only / Preview), and a status bar.
+Plus a menu bar, toolbar (New / Save / Refresh / Slugify / Card view / Read-only / Preview / Outline), and a status bar.
 
 ## Read-only mode
 
@@ -34,6 +34,8 @@ editor.
 The left sidebar is a tree:
 
 - **All Notes** — every note under the working folder.
+- **Inbox** — notes that sit at the **top level** of the working folder (those
+  not yet filed into a subfolder).
 - **Empty Notes** — notes whose content is empty or only whitespace.
 - **Subfolders** — expands to each immediate subfolder; selecting a subfolder
   lists its notes. Selecting the *Subfolders* heading itself shows a placeholder
@@ -58,12 +60,21 @@ title in **bold**, then the last-modified date and the first line of body text
 A thin separator line is drawn between cards, and each card has a little extra
 top and bottom padding. Toggle it off to return to the plain title list.
 
+## Headings outline
+
+The toolbar's **Outline** toggle (and *View → Headings outline*, Ctrl+Shift+O)
+opens a fourth pane on the right showing the markdown headings of the note in
+view as a tree (nested by heading level). Clicking a heading jumps the editor to
+that line. The outline updates as you edit the note or switch tabs. Headings
+inside fenced code blocks are ignored.
+
 ## Menus
 
-- **File** — New note, Save note, Open workspace, Close workspace, Open recent
-  workspace, New tab, Close tab, Quit.
+- **File** — New note, Save note, Refresh note, Open workspace, Refresh
+  workspace, Close workspace, Open recent workspace, New tab, Close tab, Quit.
 - **Edit** — Preferences.
-- **View** — show/hide the Toolbar and Statusbar, and choose the note sort order.
+- **View** — show/hide the Toolbar and Statusbar; toggle Read-only, Card view,
+  Preview, and the Headings outline; and choose the note sort order.
 - **Help** — About.
 
 
@@ -122,8 +133,13 @@ Notes:
   a `.png` or `.svg`. Alternatively, set a **custom icon set** in *Edit →
   Preferences → Interface*: point it at a folder containing `16x16.png`,
   `22x22.png`, `24x24.png`, `32x32.png`, `48x48.png`, `256x256.png`, and
-  `scalable.svg`. The app then uses those for its window/taskbar icon (it loads
-  them on launch; clear the setting to return to the stock icon).
+  `scalable.svg`. The app uses those for its own window/taskbar icon immediately,
+  **and** installs them into your user icon theme
+  (`~/.local/share/icons/hicolor/…`) under the name `qdvc-markdown-notebook`,
+  rewriting the `Icon=` line of its per-user `.desktop` file to match — so panels
+  and application menus pick the icon up too. Clearing the setting reverts to the
+  stock icon (and removes the installed copies). If you set a custom icon set you
+  can leave `Icon=accessories-text-editor` as-is; the app will update it.
 - `StartupWMClass=qdvc-markdown-notebook` lets the panel/taskbar match the running
   window to this entry, so it shows the app icon instead of a generic window icon.
   The app sets its program name to `qdvc-markdown-notebook` to match; the app also
@@ -163,8 +179,9 @@ Open *Edit → Preferences* (a tabbed dialog) to configure:
 - **Remember note sort order between sessions** — persist the chosen sort order
   so it is restored next launch.
 - **Reopen last workspace and notes on startup** — automatically reopen the last
-  workspace and the notes that were open, one per tab (when no folder is passed
-  on the command line).
+  workspace, the notes that were open (one per tab), and the previous sidebar
+  (pane 1) and note-list (pane 2) selections, when no folder is passed on the
+  command line.
 - **Custom application icon set** — choose a folder of icons to use in place of
   the stock app icon (see *Desktop integration* below for the required files).
 
@@ -195,10 +212,17 @@ Open notes across multiple tabs:
 
 ## Refresh note
 
-The toolbar's **Refresh note** button reloads the current note from disk — handy
-if the file was changed by another program. If the open tab has unsaved changes,
-you'll get the same save/discard/cancel prompt as when closing a tab before the
-reload happens.
+The toolbar's **Refresh note** button (also *File → Refresh note*, Ctrl+R)
+reloads the current note from disk — handy if the file was changed by another
+program. If the open tab has unsaved changes, you'll get the same
+save/discard/cancel prompt as when closing a tab before the reload happens.
+
+## Refresh workspace
+
+*File → Refresh workspace* (Ctrl+Shift+R) re-scans the working folder and
+rebuilds the sidebar (pane 1) and note list (pane 2) from disk, picking up files
+added, removed, or renamed by other programs. Your current selection is kept
+where possible; open tabs are left untouched.
 
 ## Slugify
 
@@ -214,11 +238,18 @@ becomes `my-awesome-new-note.md`.
 | --------------------- | ----------------- |
 | New note              | Ctrl+N            |
 | Save note             | Ctrl+S            |
+| Refresh note          | Ctrl+R            |
 | Open workspace        | Ctrl+O            |
+| Refresh workspace     | Ctrl+Shift+R      |
 | New tab               | Ctrl+T            |
 | Close tab             | Ctrl+W            |
 | Next / previous tab   | Ctrl+Tab / Ctrl+Shift+Tab |
 | Jump to tab 1–9       | Alt+1 … Alt+9     |
+| Toggle Read-only      | Ctrl+E            |
+| Toggle Card view      | Ctrl+D            |
+| Toggle Preview        | Ctrl+`            |
+| Toggle Headings outline | Ctrl+Shift+O    |
+| Insert 4 spaces (in editor) | Tab         |
 | Open File/Edit/View/Help menu | Alt+F / Alt+E / Alt+V / Alt+H |
 | Quit                  | Ctrl+Q            |
 

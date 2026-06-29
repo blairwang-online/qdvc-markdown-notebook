@@ -278,6 +278,24 @@ class EditorTab:
         end = self.text_buffer.get_end_iter()
         return self.text_buffer.get_text(start, end, True)
 
+    def scroll_to_line(self, line_index):
+        """
+        Move the cursor to the start of `line_index` (0-based) and scroll it into
+        view. Used by the outline pane to jump to a heading. In preview mode the
+        editor is hidden, so this scrolls the preview view to the same line
+        instead (best-effort: preview line numbers may differ from source, so we
+        clamp). Out-of-range indices are clamped to the buffer.
+        """
+        n_lines = self.text_buffer.get_line_count()
+        line = max(0, min(int(line_index), max(0, n_lines - 1)))
+        it = self.text_buffer.get_iter_at_line(line)
+        self.text_buffer.place_cursor(it)
+        # scroll_to_iter needs the view realized; use within_margin for a little
+        # context above the target line.
+        self.text_view.scroll_to_iter(it, 0.1, True, 0.0, 0.0)
+        if not self.preview:
+            self.text_view.grab_focus()
+
     def clear(self):
         """Reset to an empty, note-less tab."""
         self._loading = True

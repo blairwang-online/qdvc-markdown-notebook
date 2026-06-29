@@ -60,7 +60,8 @@ Five logical parts, one per module:
 ### 3.0 `config.py`
 Plain constants only — `APP_NAME`, `MARKDOWN_EXTENSIONS`, the `SORT_*` mode
 strings, the `ALL_NOTES` sentinel, and the sidebar `NODE_*` kind strings
-(`NODE_ALL_NOTES`, `NODE_EMPTY_NOTES`, `NODE_SUBFOLDERS`, `NODE_SUBFOLDER`). No
+(`NODE_ALL_NOTES`, `NODE_INBOX`, `NODE_EMPTY_NOTES`, `NODE_SUBFOLDERS`,
+`NODE_SUBFOLDER`). No
 GTK, no I/O, so it is safe to import from anywhere. `ALL_NOTES` is an `object()`;
 compare with `is`, never `==`. (`ALL_NOTES` predates the tree sidebar; the sidebar
 now uses the `NODE_*` kinds instead.)
@@ -77,19 +78,33 @@ now uses the `NODE_*` kinds instead.)
   `remember_sort` and `restore_session` (bools via `_coerce_bool`), `icon_set_dir`
   (a folder path; `""` means the stock icon), `sort_mode` (a persisted `SORT_*`
   string, or `None`), `last_workspace` + `last_open_notes` (the previous session's
-  folder and open-note paths, for restore-on-startup), and `recent_folders`
-  (most-recent-first list, capped at `MAX_RECENT`). `editor_font` themes the
+  folder and open-note paths, for restore-on-startup), `last_node` +
+  `last_subfolder` + `last_selected_note` (the previous sidebar/note-list
+  selection, also restored), and `recent_folders` (most-recent-first list, capped
+  at `MAX_RECENT`). `editor_font` themes the
   editor; `code_font` themes inline/fenced code in both the editor (highlighter)
   and the preview; `preview_font` is the preview body font; the two spacings apply
   to the editor and preview views. Construct via `Settings.load()`, which returns
   sane defaults on a missing/malformed file or any read error — it never raises to
   the caller. Mutators (`set_*`) validate the same way as `_apply`;
-  `set_last_session(workspace, notes)` filters the note list to strings.
+  `set_last_session(workspace, notes, node, subfolder, selected_note)` filters the
+  note list to strings and stores the selection fields.
 - `icon_set_files(folder)` (module-level, no GTK) validates a custom icon-set
   folder and returns a dict mapping each present pixel size (`ICON_SET_PNG_SIZES`
   = 16, 22, 24, 32, 48, 256) to its `<n>x<n>.png`, plus `"scalable"` →
   `scalable.svg`. Missing files are omitted; a false/non-directory path yields
   `{}`. The window turns this into a window icon list.
+- Icon-theme install (module-level, no GTK; all best-effort, never raise):
+  `install_icon_set(folder, icon_name=APP_ICON_NAME)` copies the icon-set files
+  into `$XDG_DATA_HOME/icons/hicolor/<size>x<size>/apps/<icon_name>.png` (and
+  `scalable/apps/<icon_name>.svg`) so external launchers resolve the icon by name;
+  `uninstall_icon_set(icon_name)` removes them; `update_desktop_icon(icon_name,
+  exec_path=None)` creates or rewrites the per-user `.desktop` file
+  (`desktop_file_path()` → `$XDG_DATA_HOME/applications/<DESKTOP_FILE_ID>`),
+  changing only its `Icon=` line when the file already exists (other lines
+  preserved) and writing a full default entry when it doesn't. `_data_home()`
+  resolves `$XDG_DATA_HOME` or `~/.local/share`. `APP_ICON_NAME` =
+  `qdvc-markdown-notebook`.
 - `save()` writes atomically (temp file + `os.replace`) and returns a bool.
 - `add_recent_folder()` dedups (moves existing to front), prunes directories that
   no longer exist, and caps the list.
@@ -148,6 +163,9 @@ enough" philosophy as the highlighter), not a full CommonMark parser.
   their contents, which implements the spec's "aggregate deeper levels to the
   parent subfolder" rule: selecting a top-level subfolder shows everything under
   it recursively.
+- `collect_top_level_notes(folder)` — markdown files **directly** inside `folder`
+  only (no recursion). Backs the sidebar's *Inbox* node (notes not yet filed into
+  a subfolder).
 - `immediate_subfolders(root)` — only **one** level down, hidden dirs excluded.
 - `note_is_empty(note)` / `collect_empty_notes(folder)` — for the sidebar's
   *Empty Notes* node. A note is "empty" if its content `.strip()`s to `""`.
@@ -186,6 +204,11 @@ enough" philosophy as the highlighter), not a full CommonMark parser.
   at any depth as paths relative to `root`, sorted, with `""` first (the top
   level); hidden dirs (and their descendants) are pruned. These back the pane-2 /
   tab **Move to subfolder** submenu.
+- `parse_headings(text)` — parses ATX headings (`#`..`######`) for the outline
+  pane, returning a list of `{"level", "title", "line"}` dicts (0-based line
+  index). Fenced code blocks (` ``` ` or `~~~`) are skipped so a `#` inside code
+  isn't mistaken for a heading; closing ATX `#`s are stripped from the title; a
+  `#` with no following space is not a heading. Pure text→list, no GTK, testable.
 
 ### 3.2a `editortab.py` — `EditorTab`
 Encapsulates one tab's editor state, which previously lived directly on the
@@ -227,7 +250,10 @@ window. Each `EditorTab` owns its own `Gtk.TextView`, `Gtk.TextBuffer`,
   `TextView.set_editable`/`set_cursor_visible`), `set_preview(bool)` (renders
   current content via `pango_markdown.render(..., code_font=self._code_font)` into
   the preview buffer with `insert_markup`, then switches the stack),
-  `highlight_search(query)` (see below), `title_text()`. The constructor takes
+  `highlight_search(query)` (see below), `title_text()`,
+  `scroll_to_line(line_index)` (clamp the cursor to a 0-based source line and
+  scroll it into view — used by the outline pane to jump to a heading; grabs
+  editor focus unless in preview). The constructor takes
   `code_font` and forwards it to the highlighter; the tab caches it for preview
   rendering.
 - Search highlight (#5): a dedicated `search_match` tag (yellow `#fff176`
@@ -270,23 +296,38 @@ name to `accessories-text-editor`; the entry point also calls
 `Gtk.Window.set_default_icon_name(...)` and `GLib.set_prgname(...)` so the
 panel/taskbar can match the window to the `.desktop` file (its `StartupWMClass`).
 `_apply_icon_set()` then overrides the icon when `settings.icon_set_dir` resolves
-(via `icon_set_files`) to a usable set: it loads the SVG and PNGs as
-`GdkPixbuf.Pixbuf`es and calls `set_icon_list` + `Gtk.Window.set_default_icon_list`,
-falling back silently to the stock icon on any error. `sort_mode` is seeded from
+(via `icon_set_files`) to a usable set. It does three things: (1) loads the SVG +
+PNGs as `GdkPixbuf.Pixbuf`es and calls `set_icon_list` +
+`Gtk.Window.set_default_icon_list` for an immediate in-process icon; (2) installs
+the files into the user's hicolor theme via `install_icon_set(...)` under
+`APP_ICON_NAME` and rewrites the per-user `.desktop` file's `Icon=` line via
+`update_desktop_icon(APP_ICON_NAME, exec_path=self._script_path())` so external
+launchers resolve it; (3) refreshes the running theme with
+`_refresh_icon_theme()` (`Gtk.IconTheme.get_default().rescan_if_needed()`). When
+no/invalid set is configured it reverts everything to the stock
+`accessories-text-editor` (`uninstall_icon_set` + desktop Icon= reset). All steps
+are best-effort and fall back to the stock icon. `_script_path()` returns the
+absolute entry-point path for the `.desktop` Exec line. `sort_mode` is seeded from
 `settings.sort_mode` when `remember_sort` is on, and the matching View-menu radio
 (`self._sort_items`) is activated after the menu is built. When no folder is given
 on the CLI and `restore_session` is on, `_restore_last_session()` reopens
-`last_workspace` and loads each still-existing `last_open_notes` path (first into
-the initial tab, the rest into new tabs).
+`last_workspace`, restores the pane-1 sidebar selection (`last_node` /
+`last_subfolder`, via `_select_sidebar_node`, which reloads pane 2), loads each
+still-existing `last_open_notes` path (first into the initial tab, the rest into
+new tabs), and restores the pane-2 note selection (`last_selected_note`).
 
 Menu items use `_icon_menu_item(label, icon_name)`, which builds a
 `Gtk.ImageMenuItem` (deprecated in GTK3 but the idiomatic MATE-era way to show
 icons in menus; it falls back to a plain `MenuItem`). Icons are stock freedesktop
-names: New note=`document-new`, Save note=`document-save`, Open
-workspace=`folder-open`, Open recent workspace=`document-open-recent`, New
+names: New note=`document-new`, Save note=`document-save`, Refresh
+note=`view-refresh`, Open workspace=`folder-open`, Refresh
+workspace=`view-refresh`, Open recent workspace=`document-open-recent`, New
 tab=`tab-new`, Quit=`application-exit`, Preferences=`preferences-system`,
-About=`help-about`. Plain items (Close workspace, Close tab, the View toggles, and
-the sort radio items) intentionally have no icon, per HIG restraint.
+About=`help-about`. The four View-menu mode toggles (Read-only, Card view,
+Preview, Headings outline) are `Gtk.CheckMenuItem`s that mirror the toolbar's
+toggle buttons (see below); plain items (Close workspace, Close tab, the
+Toolbar/Statusbar toggles, and the sort radio items) intentionally have no icon,
+per HIG restraint.
 
 Tab navigation (`_on_key_press`, connected to the window's `key-press-event`):
 Ctrl+Tab → `_cycle_tab(forward=True)`, Ctrl+Shift+Tab → backward (GTK sends
@@ -331,28 +372,67 @@ Tab wiring:
 
 Read-only mode (toolbar toggle, default on): `self.read_only` is the single source
 of truth, applied by `_apply_read_only()` which calls `tab.set_editable(...)` on
-every tab and refreshes the status bar. `_new_tab` seeds new tabs from it.
-`on_toggle_read_only` flips it from the `Gtk.ToggleToolButton`. Edit actions are
-gated on it: New note shows a notice and aborts, and Slugify is desensitised in
-`_update_slugify_sensitivity`. Saving is left allowed (a read-only buffer cannot
-have changed, so it is harmless).
+every tab and refreshes the status bar. `_new_tab` seeds new tabs from it. Edit
+actions are gated on it: New note shows a notice and aborts, and Slugify is
+desensitised in `_update_slugify_sensitivity`. Saving is left allowed (a read-only
+buffer cannot have changed, so it is harmless).
 
 Preview mode (toolbar toggle, default off): `self.preview_mode` is window-wide,
 applied by `_apply_preview()` which calls `tab.set_preview(...)` on every tab,
-**disables the Read-only toggle** (`btn_readonly.set_sensitive(False)`) so it
-can't be changed while previewing, and refreshes the status bar. `_new_tab` seeds
-new tabs from it. `on_toggle_preview` flips it from the `Gtk.ToggleToolButton`.
+**disables the Read-only toggle** (both the toolbar button and the menu item) so
+it can't be changed while previewing, refreshes the status bar, and refreshes the
+outline. `_new_tab` seeds new tabs from it.
 In `update_status` the bold mode label shows "Rendered Markdown preview" when
 `preview_mode` is on, overriding the read-only/edit label; otherwise it shows
 "Read-only mode" / "Edit mode" as before. Preview is always read-only by
 construction (the preview `TextView` is non-editable), independent of
 `self.read_only`.
 
-Menus (order **File, Edit, View, Help**): **File** (New note, Save note, Open
-workspace, Close workspace, Open recent workspace, New tab, Close tab, Quit, with
-two separators per the layout), **Edit** (Preferences), **View** (Toolbar and
-Statusbar `Gtk.CheckMenuItem` toggles, a separator, then the three sort
-`RadioMenuItem`s), **Help** (About). `on_close_workspace` resets to the empty
+Mode-toggle menu↔toolbar sync: each of Read-only, Card view, Preview, and the
+Headings outline exists **both** as a toolbar `Gtk.ToggleToolButton` (`btn_*`) and
+a View-menu `Gtk.CheckMenuItem` (`mi_*`). Each has a single entry point —
+`_set_read_only` / `_set_card_view` / `_set_preview` / `_set_outline` — that
+updates the boolean state, calls `_sync_toggle(button, menu_item, value)` to set
+both widgets without re-firing (guarded by `self._syncing_view_toggles`), then
+applies the effect. The toolbar handlers (`on_toggle_*`) and menu handlers
+(`on_menu_toggle_*`) both early-return when the guard is set and otherwise funnel
+into the matching `_set_*`. Shortcuts: Read-only Ctrl+E, Card view Ctrl+D, Preview
+Ctrl+\` , Outline Ctrl+Shift+O.
+
+Headings outline (pane 4, toggle default off): `_build_outline()` builds a
+`Gtk.ScrolledWindow` (`outline_scroll`, `set_no_show_all(True)` so it stays hidden)
+containing `outline_view`, a `Gtk.TreeView` over `outline_store`
+(`Gtk.TreeStore(str, int)` = label, 0-based source line). It sits in a third
+nested `Gtk.Paned` (`_editor_split`: editor | outline). `_apply_outline_visibility`
+shows/hides the scroll and, when shown, calls `_refresh_outline()`, which clears
+the store and rebuilds it from `model.parse_headings(active_tab.get_content())`,
+nesting rows by heading level using a `(level, iter)` stack, then `expand_all()`.
+It is refreshed on note load, tab switch, buffer change, and preview toggle.
+Clicking a row (`row-activated`) or selecting it (`changed`, guarded by
+`_outline_guard`) calls `_jump_to_outline_line` → `tab.scroll_to_line(line)`.
+
+Refresh workspace (`on_refresh_workspace`, File menu, Ctrl+Shift+R): re-scans the
+working folder and rebuilds panes 1+2 from disk via
+`_reload_sidebar(preserve_selection=True)` (which remembers the current node /
+subfolder and re-selects it after rebuild, falling back to All Notes) then
+`_reload_notelist(select_path=...)` to keep the pane-2 selection. Open tabs are
+untouched. `_select_sidebar_node(kind, subfolder)` now returns a bool indicating
+whether a matching row was found.
+
+Inbox node (`NODE_INBOX`): a sidebar row between All Notes and Empty Notes
+(`mail-inbox` icon) that lists `model.collect_top_level_notes(root_folder)` — the
+top-level (non-recursive) markdown files. `_notes_for_current_subfolder` handles
+it; `on_sidebar_selection_changed` treats it like the other note-listing nodes.
+
+Menus (order **File, Edit, View, Help**): **File** (New note, Save note, Refresh
+note, | Open workspace, Refresh workspace, Close workspace, Open recent workspace,
+| New tab, Close tab, | Quit), **Edit** (Preferences), **View** (Toolbar and
+Statusbar `Gtk.CheckMenuItem` toggles, a separator, the Read-only/Card view/
+Preview/Headings outline mode toggles, a separator, then the three sort
+`RadioMenuItem`s), **Help** (About). Refresh note (`mi_refresh`, Ctrl+R) mirrors
+the toolbar button and is sensitivity-synced in `_update_save_sensitivity`;
+Refresh workspace (`mi_refresh_ws`, Ctrl+Shift+R) uses the same `view-refresh`
+icon. `on_close_workspace` resets to the empty
 initial state (after `_confirm_close_all`); `on_toggle_toolbar` /
 `on_toggle_statusbar` flip `self.toolbar` / `self.statusbar_box` visibility (both
 checks default on). `on_preferences` opens the `PreferencesDialog`; `on_about`
@@ -374,8 +454,9 @@ font, code font, preview font, line spacings, toolbar style, **tab-title length*
 `settings.toolbar_style` to a `Gtk.ToolbarStyle` (`BOTH` = below, `BOTH_HORIZ` =
 beside) via `_toolbar_style_enum()`. `on_open_recent` opens a folder from the menu
 (handling the case where it has since been deleted). On quit / window close,
-`_save_session()` records `root_folder` + the open notes' paths into settings and
-saves (so toggling *restore session* later just works); `on_sort_changed` persists
+`_save_session()` records `root_folder`, the open notes' paths, **and** the
+current sidebar node / subfolder / pane-2 note selection into settings and saves
+(so toggling *restore session* later just works); `on_sort_changed` persists
 the new `sort_mode` when *remember sort order* is on.
 
 Note: inside the selection handlers the local variable for the GTK model is
@@ -383,18 +464,23 @@ named `model_` (trailing underscore) to avoid shadowing the imported `model`
 module.
 
 UI is built in `_build_*` methods and assembled in `_build_ui()`:
-- Layout: `vbox` → menubar, toolbar, then nested `Gtk.Paned`
-  (`outer` horizontal holds sidebar + `inner`; `inner` holds note list + editor),
-  then statusbar. Pane positions set with `set_position`.
+- Layout: `vbox` → menubar, toolbar, then nested `Gtk.Paned`. `outer`
+  (horizontal) holds sidebar + `inner`; `inner` holds the note list +
+  `editor_split`; `editor_split` (`self._editor_split`) holds the editor notebook
+  + the outline pane (pane 4). Then the statusbar. Pane positions set with
+  `set_position`; the outline pane is hidden until toggled (`set_no_show_all`).
 - Sidebar: `Gtk.TreeStore(str, str, str, str)` = (icon-name, label, node-kind,
   subfolder-name). A `CellRendererPixbuf` (icon-name → column 0) precedes the text
   renderer (label → column 1). Built by `_reload_sidebar` as a **tree**: top-level
-  rows for *All Notes* (`emblem-documents`), *Empty Notes* (`edit-clear`), and
-  *Subfolders* (`folder`); each immediate subfolder is a child of the Subfolders
+  rows for *All Notes* (`emblem-documents`), *Inbox* (`mail-inbox`, `NODE_INBOX`,
+  top-level notes only), *Empty Notes* (`edit-clear`), and *Subfolders* (`folder`);
+  each immediate subfolder is a child of the Subfolders
   row (`NODE_SUBFOLDER`, label and column-3 = its name). `expand_all()` keeps the
-  branch open. `on_sidebar_selection_changed` switches on the node kind (column 2):
-  All/Empty/subfolder reload the list; the Subfolders **parent** shows placeholders
-  in both panes (`_show_notelist_placeholder` + `tab.clear()`).
+  branch open. `_reload_sidebar(preserve_selection=True)` re-selects the prior
+  node/subfolder after a rebuild (used by Refresh workspace), else it selects All
+  Notes. `on_sidebar_selection_changed` switches on the node kind (column 2):
+  All/Inbox/Empty/subfolder reload the list; the Subfolders **parent** shows
+  placeholders in both panes (`_show_notelist_placeholder` + `tab.clear()`).
 - Toolbar: built in `_build_toolbar`, style from `_toolbar_style_enum()`. Order:
   **New note**, **Save note** (`btn_save`, `document-save`; starts insensitive and
   is enabled only when the active tab is dirty — `_update_save_sensitivity()`,
@@ -408,12 +494,15 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   `self.card_view`, calls `_apply_card_view()`, and reloads keeping selection), `|`
   separator, **Read-only** (`btn_readonly`, active by default), **Preview**
   (`btn_preview`, `document-page-setup` icon, off by default; locks the Read-only
-  toggle while active). Separators are `SeparatorToolItem`s with `set_draw(True)`
-  (via `_toolbar_separator()`) so the divider line is visible. Card view,
-  Read-only, and Preview are marked `set_is_important(True)`: in the "beside"
-  toolbar style (`BOTH_HORIZ`) only important items show their label beside the
-  icon, so only those three are labelled while New/Save/Refresh/Slugify are
-  icon-only; in "below" style (`BOTH`) every item shows its label.
+  toggle while active), **Outline** (`btn_outline`, `view-list` icon, off by
+  default — shows/hides pane 4). Separators are `SeparatorToolItem`s with
+  `set_draw(True)` (via `_toolbar_separator()`) so the divider line is visible.
+  Card view, Read-only, Preview, and Outline are marked `set_is_important(True)`:
+  in the "beside" toolbar style (`BOTH_HORIZ`) only important items show their
+  label beside the icon, so only those are labelled while New/Save/Refresh/Slugify
+  are icon-only; in "below" style (`BOTH`) every item shows its label. Each of
+  Read-only/Card view/Preview/Outline has a matching View-menu `Gtk.CheckMenuItem`
+  kept in sync (see the toggle-sync paragraph above).
 - Note list (pane 2): a vertical box with a **search row** on top (a `Gtk.Entry`
   with a clear icon + a "Search" `Gtk.Button`) above a `Gtk.Stack`
   (`notelist_stack`). The stack has a "list" child (the scrolled
@@ -443,6 +532,11 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   themes the whole view; `code_font` themes code spans via the highlighter tags;
   `preview_font` and the two line-spacings theme the preview/editor views. Keep a
   single uniform size for body text — do not introduce size-varying tags.
+- Outline (pane 4): `_build_outline` → `outline_scroll` (hidden via
+  `set_no_show_all`) wrapping `outline_view` over `outline_store`
+  (`Gtk.TreeStore(str, int)` = label, source line). Rebuilt by `_refresh_outline`
+  from `model.parse_headings`, nested by heading level; clicking/selecting a row
+  jumps the active tab to that line. See the Headings-outline paragraph above.
 - Status bar (pane footer): a horizontal box with a bold `mode_label` (Read-only /
   Edit mode, or "Rendered Markdown preview") on the left and the regular
   `Gtk.Statusbar` filling the rest; `update_status` sets both and refreshes the
@@ -452,7 +546,7 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 
 - Selecting a sidebar row → `on_sidebar_selection_changed` sets `current_node`
   (and `current_subfolder` for a subfolder), then either reloads the note list
-  (All Notes / Empty Notes / a subfolder) or shows the pane-2 + pane-3
+  (All Notes / Inbox / Empty Notes / a subfolder) or shows the pane-2 + pane-3
   placeholders (the *Subfolders* parent). It does not disturb tab content.
 - Searching → `on_search` (Entry "activate"/Enter or the Search button) reads the
   box, sets `search_query`, and reloads; `on_search_icon_press` (the clear icon)
@@ -479,8 +573,11 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 - Typing → the tab's own `_buffer_changed` sets its `dirty` flag, re-highlights,
   updates the tab title, and calls back to the window (`_on_tab_changed` →
   `update_status`, which also re-evaluates Slugify sensitivity).
-- Toggle read-only → `on_toggle_read_only` → `_apply_read_only` flips editability
-  on all tabs and updates the bold status indicator.
+- Toggle read-only / card view / preview / outline → from either the toolbar
+  button (`on_toggle_*`) or the View-menu item (`on_menu_toggle_*`) into the
+  single `_set_*` entry point, which syncs both widgets (`_sync_toggle`, guarded)
+  and applies the effect. Read-only flips editability on all tabs; outline
+  shows/hides pane 4 and rebuilds it.
 - New note → `on_new_note` (blocked with a notice in read-only mode) writes an
   empty file into the selected subfolder, or the root otherwise, via
   `model.create_empty_note`, reloads the list, and opens it in the active tab.
@@ -490,22 +587,30 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   in edit mode when those conditions hold (see §3.3 toolbar).
 - New tab (Ctrl+T) → `on_new_tab` → `_new_tab(focus=True)`.
 - Switch tabs → Ctrl+Tab / Ctrl+Shift+Tab cycle; Alt+1..9 jump (via
-  `_on_key_press`).
+  `_on_key_press`). On switch, the outline is refreshed for the new active tab.
 - Close tab (Ctrl+W / close button) → `on_close_tab` / the tab's close callback →
   `_close_tab`, a no-op at one tab.
 - Save → `_save_active` writes the active tab's content to its note.
 - Refresh note → `on_refresh_note` reloads the active note from disk (fresh
   `model.Note`), after `_maybe_warn_unsaved` (cancel aborts the reload); re-applies
   the current search highlight and refreshes the status.
+- Refresh workspace (Ctrl+Shift+R) → `on_refresh_workspace` re-scans the working
+  folder and rebuilds panes 1+2 (`_reload_sidebar(preserve_selection=True)` +
+  `_reload_notelist`), keeping the selection; tabs untouched.
+- Outline navigation → clicking/selecting an outline row calls
+  `_jump_to_outline_line` → `EditorTab.scroll_to_line`; the outline rebuilds on
+  note load, edit, tab switch, and preview toggle.
 - Sort change → `on_sort_changed` reloads the list, keeping the active tab's note
   selected by path, and persists `sort_mode` when *remember sort order* is on.
 - Preferences → `on_preferences` opens the dialog and calls `run_modal`; live
   changes preview via `_apply_preferences`, Save persists, Cancel reverts.
 - About → `on_about` shows a `Gtk.AboutDialog`.
 - Quit / window close → `_confirm_close_all` prompts for each dirty tab, then
-  `_save_session()` records the workspace + open notes for restore.
+  `_save_session()` records the workspace, open notes, and the sidebar/note-list
+  selection for restore.
 - Startup restore → when no CLI folder is given and *restore session* is on,
-  `_restore_last_session()` reopens the last workspace and its open notes.
+  `_restore_last_session()` reopens the last workspace, restores the pane-1 and
+  pane-2 selections, and reopens its notes.
 - Close workspace → `on_close_workspace` (after `_confirm_close_all`) clears the
   sidebar, note list, and tabs, and drops `root_folder`, returning to the empty
   initial state.
@@ -521,9 +626,13 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 - **Rename.** There is no free-form rename UI; renaming happens via **Slugify**,
   which derives the filename from the note's H1. New notes start as `Untitled.md`,
   `Untitled 1.md`, … A general inline-rename remains a natural next feature (§7).
-- **Desktop integration.** The app ships no installer; the `.desktop` file is set
-  up by hand (see README). `Icon=accessories-text-editor` is a stock freedesktop
-  icon present on typical GNOME/MATE installs.
+- **Desktop integration.** The app ships no installer; the base `.desktop` file
+  is set up by hand (see README). `Icon=accessories-text-editor` is a stock
+  freedesktop icon present on typical GNOME/MATE installs. *However*, choosing a
+  custom icon set in Preferences makes the app install the icons into the user's
+  hicolor theme and **rewrite the per-user `.desktop` file's `Icon=` line**
+  itself (`update_desktop_icon`), so a hand-edited `Icon=` line may be overwritten
+  on the next icon-set change. See §3.0a / §3.3.
 
 ## 6. Gotchas
 
@@ -555,10 +664,17 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 - Search performance: content search currently reads every candidate file per
   query. For large note trees, add a content index or run the filter on a
   background thread (and/or debounce) to keep the UI responsive.
-- File-system watch (`Gio.FileMonitor`) to auto-refresh on external changes.
+- File-system watch (`Gio.FileMonitor`) to auto-refresh on external changes — a
+  natural automatic companion to the manual Refresh workspace command.
 - Per-note word/char count in the status bar.
+- Export the rendered preview to HTML (reuse `pango_markdown` or add a real
+  Markdown→HTML pass).
+- Pinned/favourite notes (another sidebar node, like Inbox).
 - Remember window geometry (e.g. as more keys in the settings YAML). The last
-  folder + open notes are now restored via `restore_session`; geometry is not.
+  folder, open notes, and pane selections are now restored via `restore_session`;
+  geometry is not.
+- Outline could highlight the heading nearest the cursor as you scroll/edit
+  (currently it only jumps on click).
 
 ## 8. Testing
 
@@ -580,14 +696,25 @@ ordered = model.sort_notes(notes, config.SORT_DATE_NEW)
 ```
 
 This is a good place to add a real `tests/` directory (pytest) covering
-`collect_notes`, `immediate_subfolders`, `sort_notes`, the
-`unique_note_path`/`create_empty_note`/`read_note`/`write_note` roundtrip, and the
-`heading_for_slug`/`slugify`/`rename_note` helpers — none of which need GTK.
+`collect_notes`, `collect_top_level_notes`, `immediate_subfolders`, `sort_notes`,
+`parse_headings`, the
+`unique_note_path`/`create_empty_note`/`read_note`/`write_note` roundtrip, the
+`heading_for_slug`/`slugify`/`rename_note`/`move_note`/`all_subfolders` helpers,
+and the `settings` icon-install / `.desktop` / round-trip helpers — none of which
+need GTK.
 
 Manual smoke test (needs GTK installed):
 
-1. Launch with a sample folder; confirm sidebar lists subfolders one level deep.
-2. Select All Notes vs a subfolder; confirm counts in the status bar.
+1. Launch with a sample folder; confirm sidebar lists All Notes, Inbox, Empty
+   Notes, and subfolders one level deep.
+2. Select All Notes vs Inbox vs a subfolder; confirm counts in the status bar
+   (Inbox shows only top-level notes).
 3. Create, edit, save a note; reopen to confirm persistence.
 4. Switch sort modes; confirm ordering and that the open note stays selected.
 5. Edit without saving, then switch notes / quit; confirm the unsaved prompt.
+6. Toggle Read-only/Card view/Preview/Outline from both the toolbar and the View
+   menu; confirm they stay in sync. Click outline headings to jump.
+7. Set a custom icon set in Preferences; confirm the window icon changes and a
+   `qdvc-markdown-notebook` icon appears under `~/.local/share/icons/hicolor`.
+8. Enable "reopen last workspace and notes"; quit with a selection and several
+   tabs open; relaunch with no argument and confirm panes 1+2 and tabs restore.

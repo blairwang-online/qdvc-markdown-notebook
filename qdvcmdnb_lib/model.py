@@ -56,6 +56,24 @@ def collect_notes(folder):
     return notes
 
 
+def collect_top_level_notes(folder):
+    """
+    Return Note objects for markdown files directly inside `folder` only (no
+    recursion). Backs the sidebar's *Inbox* node: notes that haven't been filed
+    into a subfolder yet.
+    """
+    notes = []
+    try:
+        entries = os.listdir(folder)
+    except OSError:
+        return notes
+    for name in entries:
+        full = os.path.join(folder, name)
+        if is_markdown(name) and os.path.isfile(full):
+            notes.append(Note(full))
+    return notes
+
+
 def note_is_empty(note):
     """
     Return True if `note`'s content is empty or entirely whitespace. Unreadable
@@ -304,3 +322,46 @@ def all_subfolders(root):
             rel = os.path.relpath(full, root)
             results.append(rel)
     return results
+
+
+# --------------------------------------------------------------------------- #
+# Headings outline
+# --------------------------------------------------------------------------- #
+_ATX_HEADING_RE = re.compile(r"^(#{1,6})\s+(\S.*?)\s*#*\s*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def parse_headings(text):
+    """
+    Parse ATX markdown headings (`#`..`######`) out of `text` for the outline
+    pane. Returns a list of dicts: {"level": int 1..6, "title": str, "line":
+    int 0-based line index of the heading}.
+
+    Fenced code blocks (``` or ~~~) are skipped so a `#` comment inside code is
+    not mistaken for a heading. Trailing `#` (closed ATX headings) are stripped
+    from the title. Pure text→list, no GTK, so it is unit-testable.
+    """
+    headings = []
+    in_fence = False
+    fence_marker = None
+    for idx, line in enumerate(text.split("\n")):
+        fence = _FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker
+            elif marker == fence_marker:
+                in_fence = False
+                fence_marker = None
+            continue
+        if in_fence:
+            continue
+        m = _ATX_HEADING_RE.match(line)
+        if m:
+            headings.append({
+                "level": len(m.group(1)),
+                "title": m.group(2).strip(),
+                "line": idx,
+            })
+    return headings

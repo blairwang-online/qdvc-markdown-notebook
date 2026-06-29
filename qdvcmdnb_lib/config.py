@@ -22,6 +22,7 @@ ALL_NOTES = object()
 # Sidebar node kinds. Each sidebar row carries one of these so the selection
 # handler knows what the row represents (stored in a hidden TreeStore column).
 NODE_ALL_NOTES = "all_notes"        # every note under the root
+NODE_INBOX = "inbox"                # notes at the top level only (not recursive)
 NODE_EMPTY_NOTES = "empty_notes"    # notes that are empty / all-whitespace
 NODE_SUBFOLDERS = "subfolders"      # the parent "Subfolders" row (no note list)
 NODE_SUBFOLDER = "subfolder"        # an individual subfolder (label = its name)

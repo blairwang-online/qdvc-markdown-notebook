@@ -22,6 +22,9 @@ Schema (version 1):
     last_workspace: /home/user/notes   # restored on startup (when restore_session)
     last_open_notes:                   # note paths reopened (when restore_session)
       - /home/user/notes/a.md
+    last_node: subfolder               # restored sidebar selection (kind)
+    last_subfolder: work               # restored subfolder name (if any)
+    last_selected_note: /home/user/notes/a.md  # restored pane-2 selection
     recent_folders:                    # most-recent first, capped at MAX_RECENT
       - /home/user/notes
       - /home/user/work/notes
@@ -77,6 +80,12 @@ DEFAULT_ICON_SET_DIR = ""
 ICON_SET_PNG_SIZES = (16, 22, 24, 32, 48, 256)
 ICON_SET_SVG_NAME = "scalable.svg"
 
+# The themed icon name the app installs a custom icon set under, and the matching
+# .desktop file id. Other launchers resolve "Icon=qdvc-markdown-notebook" against
+# the user's hicolor theme once the icons are installed.
+APP_ICON_NAME = "qdvc-markdown-notebook"
+DESKTOP_FILE_ID = "qdvc-markdown-notebook.desktop"
+
 SCHEMA_VERSION = 1
 MAX_RECENT = 10
 
@@ -122,6 +131,118 @@ def icon_set_files(folder):
     if os.path.isfile(svg):
         found["scalable"] = svg
     return found
+
+
+def _data_home():
+    """Return $XDG_DATA_HOME or ~/.local/share."""
+    base = os.environ.get("XDG_DATA_HOME")
+    if not base:
+        base = os.path.join(os.path.expanduser("~"), ".local", "share")
+    return base
+
+
+def install_icon_set(folder, icon_name=APP_ICON_NAME):
+    """
+    Copy a custom icon-set folder's files into the user's hicolor icon theme so
+    that other launchers (panels, app menus) resolve `Icon=<icon_name>`. PNGs go
+    to .../icons/hicolor/<size>x<size>/apps/<icon_name>.png and the SVG to
+    .../icons/hicolor/scalable/apps/<icon_name>.svg.
+
+    Returns True if at least one icon was installed, False otherwise (including a
+    missing/empty folder). Never raises — best-effort, no GTK. The caller is
+    expected to refresh the running Gtk.IconTheme afterwards.
+    """
+    import shutil
+    files = icon_set_files(folder)
+    if not files:
+        return False
+    hicolor = os.path.join(_data_home(), "icons", "hicolor")
+    installed = False
+    for key, src in files.items():
+        if key == "scalable":
+            dest_dir = os.path.join(hicolor, "scalable", "apps")
+            dest = os.path.join(dest_dir, f"{icon_name}.svg")
+        else:
+            dest_dir = os.path.join(hicolor, f"{key}x{key}", "apps")
+            dest = os.path.join(dest_dir, f"{icon_name}.png")
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            shutil.copyfile(src, dest)
+            installed = True
+        except OSError:
+            continue
+    return installed
+
+
+def uninstall_icon_set(icon_name=APP_ICON_NAME):
+    """Remove any previously installed custom icons for `icon_name`. Best-effort."""
+    hicolor = os.path.join(_data_home(), "icons", "hicolor")
+    for size in ICON_SET_PNG_SIZES:
+        path = os.path.join(hicolor, f"{size}x{size}", "apps",
+                            f"{icon_name}.png")
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    svg = os.path.join(hicolor, "scalable", "apps", f"{icon_name}.svg")
+    try:
+        os.remove(svg)
+    except OSError:
+        pass
+
+
+def desktop_file_path():
+    """Path to the per-user .desktop file the app maintains its Icon= line in."""
+    return os.path.join(_data_home(), "applications", DESKTOP_FILE_ID)
+
+
+def update_desktop_icon(icon_name, exec_path=None):
+    """
+    Create or update the per-user .desktop file so its `Icon=` line points at
+    `icon_name`. If the file does not exist yet it is created with sensible
+    defaults; if it exists only the Icon= line is rewritten (other lines are
+    preserved). `exec_path` (absolute path to the script) is used only when
+    creating the file. Returns True on success. Never raises.
+    """
+    path = desktop_file_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+            out = []
+            replaced = False
+            for line in lines:
+                if line.startswith("Icon="):
+                    out.append(f"Icon={icon_name}\n")
+                    replaced = True
+                else:
+                    out.append(line)
+            if not replaced:
+                out.append(f"Icon={icon_name}\n")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.writelines(out)
+        else:
+            exec_line = (f"python3 {exec_path} %F" if exec_path
+                         else "qdvc-markdown-notebook %F")
+            content = (
+                "[Desktop Entry]\n"
+                "Type=Application\n"
+                "Name=QDVC Markdown Notebook\n"
+                "Comment=Three-pane markdown notebook viewer/editor\n"
+                f"Exec={exec_line}\n"
+                f"Icon={icon_name}\n"
+                "Terminal=false\n"
+                "Categories=Office;Utility;TextEditor;\n"
+                "MimeType=text/markdown;\n"
+                "StartupNotify=true\n"
+                "StartupWMClass=qdvc-markdown-notebook\n"
+            )
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(content)
+        return True
+    except OSError:
+        return False
 
 
 def _warn_no_yaml_once():
@@ -188,6 +309,12 @@ class Settings:
         # Last session's workspace + open note paths, for restore-on-startup.
         self.last_workspace = None
         self.last_open_notes = []
+        # Last sidebar selection (a NODE_* string) and, for a subfolder, its
+        # name; plus the note that was selected in pane 2. Restored with the
+        # session when restore_session is on.
+        self.last_node = None
+        self.last_subfolder = None
+        self.last_selected_note = None
         self.recent_folders = []
         self._extra = {}  # forward-compatibility: unrecognised top-level keys
 
@@ -265,6 +392,16 @@ class Settings:
             self.last_open_notes = [n for n in last_notes
                                     if isinstance(n, str)]
 
+        last_node = data.get("last_node")
+        if isinstance(last_node, str) and last_node.strip():
+            self.last_node = last_node
+        last_sub = data.get("last_subfolder")
+        if isinstance(last_sub, str) and last_sub.strip():
+            self.last_subfolder = last_sub
+        last_sel = data.get("last_selected_note")
+        if isinstance(last_sel, str) and last_sel.strip():
+            self.last_selected_note = last_sel
+
         recents = data.get("recent_folders")
         if isinstance(recents, list):
             self.recent_folders = [r for r in recents if isinstance(r, str)]
@@ -274,7 +411,8 @@ class Settings:
                  "editor_line_spacing", "preview_line_spacing",
                  "toolbar_style", "tab_title_length", "remember_sort",
                  "restore_session", "icon_set_dir", "sort_mode",
-                 "last_workspace", "last_open_notes", "recent_folders"}
+                 "last_workspace", "last_open_notes", "last_node",
+                 "last_subfolder", "last_selected_note", "recent_folders"}
         self._extra = {k: v for k, v in data.items() if k not in known}
 
     # ------------------------------------------------------------ saving -- #
@@ -294,6 +432,9 @@ class Settings:
             "sort_mode": self.sort_mode,
             "last_workspace": self.last_workspace,
             "last_open_notes": list(self.last_open_notes),
+            "last_node": self.last_node,
+            "last_subfolder": self.last_subfolder,
+            "last_selected_note": self.last_selected_note,
             "recent_folders": list(self.recent_folders),
         }
         d.update(self._extra)  # round-trip forward-compatible keys
@@ -361,14 +502,23 @@ class Settings:
         if isinstance(mode, str) and mode.strip():
             self.sort_mode = mode
 
-    def set_last_session(self, workspace, open_notes):
-        """Record the workspace folder and the open notes for restore."""
+    def set_last_session(self, workspace, open_notes, node=None,
+                         subfolder=None, selected_note=None):
+        """
+        Record the workspace folder, the open notes, and the sidebar/note-list
+        selection for restore-on-startup.
+        """
         self.last_workspace = workspace if isinstance(workspace, str) else None
         if isinstance(open_notes, (list, tuple)):
             self.last_open_notes = [n for n in open_notes
                                     if isinstance(n, str)]
         else:
             self.last_open_notes = []
+        self.last_node = node if isinstance(node, str) else None
+        self.last_subfolder = (subfolder if isinstance(subfolder, str)
+                               else None)
+        self.last_selected_note = (selected_note
+                                   if isinstance(selected_note, str) else None)
 
     def add_recent_folder(self, folder):
         """

@@ -22,11 +22,19 @@ from .config import (
     SORT_DATE_OLD,
     ALL_NOTES,
     NODE_ALL_NOTES,
+    NODE_INBOX,
     NODE_EMPTY_NOTES,
     NODE_SUBFOLDERS,
     NODE_SUBFOLDER,
 )
-from .settings import Settings, icon_set_files
+from .settings import (
+    Settings,
+    icon_set_files,
+    install_icon_set,
+    uninstall_icon_set,
+    update_desktop_icon,
+    APP_ICON_NAME,
+)
 from .editortab import EditorTab
 from .preferences import PreferencesDialog
 
@@ -63,6 +71,7 @@ class NotebookWindow(Gtk.Window):
         self.read_only = True             # (#1) start in read-only mode
         self.preview_mode = False         # rendered-markdown preview (all tabs)
         self.card_view = False            # pane-2 card view (off by default)
+        self.outline_visible = False      # headings outline pane (pane 4)
         self.search_query = None          # active note-list search (None = off)
         self._search_no_results = False
 
@@ -104,17 +113,24 @@ class NotebookWindow(Gtk.Window):
         vbox.pack_start(self._build_menubar(), False, False, 0)
         vbox.pack_start(self._build_toolbar(), False, False, 0)
 
-        # Three-pane layout via nested GtkPaned.
+        # Four-pane layout via nested GtkPaned: sidebar | (notelist | (editor |
+        # outline)). The outline pane (pane 4) is hidden until toggled on.
         outer = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
         inner = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        editor_split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        self._editor_split = editor_split
 
         outer.pack1(self._build_sidebar(), resize=False, shrink=False)
         outer.pack2(inner, resize=True, shrink=False)
         inner.pack1(self._build_notelist(), resize=False, shrink=False)
-        inner.pack2(self._build_editor(), resize=True, shrink=False)
+        inner.pack2(editor_split, resize=True, shrink=False)
+        editor_split.pack1(self._build_editor(), resize=True, shrink=False)
+        editor_split.pack2(self._build_outline(), resize=False, shrink=False)
 
         outer.set_position(200)
         inner.set_position(280)
+        # Give the outline ~220px from the right when shown.
+        editor_split.set_position(520)
 
         vbox.pack_start(outer, True, True, 0)
         vbox.pack_start(self._build_statusbar(), False, False, 0)
@@ -144,12 +160,35 @@ class NotebookWindow(Gtk.Window):
         mi_save.connect("activate", self.on_save_note)
         file_menu.append(mi_save)
 
+        # Refresh note — mirrors the toolbar button; Ctrl+R. Disabled until a
+        # note is open (kept in sync in _update_save_sensitivity).
+        self.mi_refresh = self._icon_menu_item("Refresh note", "view-refresh")
+        self.mi_refresh.add_accelerator("activate", accel, Gdk.KEY_r,
+                                        Gdk.ModifierType.CONTROL_MASK,
+                                        Gtk.AccelFlags.VISIBLE)
+        self.mi_refresh.set_sensitive(False)
+        self.mi_refresh.connect("activate", self.on_refresh_note)
+        file_menu.append(self.mi_refresh)
+
+        file_menu.append(Gtk.SeparatorMenuItem())
+
         mi_open = self._icon_menu_item("Open workspace", "folder-open")
         mi_open.add_accelerator("activate", accel, Gdk.KEY_o,
                                 Gdk.ModifierType.CONTROL_MASK,
                                 Gtk.AccelFlags.VISIBLE)
         mi_open.connect("activate", self.on_open_folder)
         file_menu.append(mi_open)
+
+        # Refresh workspace — re-scan the working folder and rebuild panes 1+2
+        # from disk. Same icon as Refresh note. Ctrl+Shift+R.
+        self.mi_refresh_ws = self._icon_menu_item("Refresh workspace",
+                                                  "view-refresh")
+        self.mi_refresh_ws.add_accelerator(
+            "activate", accel, Gdk.KEY_r,
+            Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK,
+            Gtk.AccelFlags.VISIBLE)
+        self.mi_refresh_ws.connect("activate", self.on_refresh_workspace)
+        file_menu.append(self.mi_refresh_ws)
 
         mi_close_ws = Gtk.MenuItem(label="Close workspace")
         mi_close_ws.connect("activate", self.on_close_workspace)
@@ -216,6 +255,42 @@ class NotebookWindow(Gtk.Window):
         self.mi_statusbar.set_active(True)
         self.mi_statusbar.connect("toggled", self.on_toggle_statusbar)
         view_menu.append(self.mi_statusbar)
+
+        view_menu.append(Gtk.SeparatorMenuItem())
+
+        # Mode toggles that mirror the toolbar's toggle buttons. A guard flag
+        # (_syncing_view_toggles) prevents the menu↔toolbar sync from looping.
+        self._syncing_view_toggles = False
+
+        self.mi_readonly = Gtk.CheckMenuItem(label="Read-only")
+        self.mi_readonly.set_active(True)
+        self.mi_readonly.add_accelerator("activate", accel, Gdk.KEY_e,
+                                         Gdk.ModifierType.CONTROL_MASK,
+                                         Gtk.AccelFlags.VISIBLE)
+        self.mi_readonly.connect("toggled", self.on_menu_toggle_read_only)
+        view_menu.append(self.mi_readonly)
+
+        self.mi_cardview = Gtk.CheckMenuItem(label="Card view")
+        self.mi_cardview.add_accelerator("activate", accel, Gdk.KEY_d,
+                                         Gdk.ModifierType.CONTROL_MASK,
+                                         Gtk.AccelFlags.VISIBLE)
+        self.mi_cardview.connect("toggled", self.on_menu_toggle_card_view)
+        view_menu.append(self.mi_cardview)
+
+        self.mi_preview = Gtk.CheckMenuItem(label="Preview")
+        self.mi_preview.add_accelerator("activate", accel, Gdk.KEY_grave,
+                                        Gdk.ModifierType.CONTROL_MASK,
+                                        Gtk.AccelFlags.VISIBLE)
+        self.mi_preview.connect("toggled", self.on_menu_toggle_preview)
+        view_menu.append(self.mi_preview)
+
+        self.mi_outline = Gtk.CheckMenuItem(label="Headings outline")
+        self.mi_outline.add_accelerator("activate", accel, Gdk.KEY_o,
+                                        Gdk.ModifierType.CONTROL_MASK
+                                        | Gdk.ModifierType.SHIFT_MASK,
+                                        Gtk.AccelFlags.VISIBLE)
+        self.mi_outline.connect("toggled", self.on_menu_toggle_outline)
+        view_menu.append(self.mi_outline)
 
         view_menu.append(Gtk.SeparatorMenuItem())
 
@@ -358,6 +433,17 @@ class NotebookWindow(Gtk.Window):
         self.btn_preview.connect("toggled", self.on_toggle_preview)
         toolbar.insert(self.btn_preview, -1)
 
+        # Outline toggle: show/hide the headings-outline pane (pane 4).
+        self.btn_outline = Gtk.ToggleToolButton()
+        self.btn_outline.set_icon_name("view-list")
+        self.btn_outline.set_label("Outline")
+        self.btn_outline.set_tooltip_text(
+            "Show the headings outline of the current note")
+        self.btn_outline.set_active(False)
+        self.btn_outline.set_is_important(True)
+        self.btn_outline.connect("toggled", self.on_toggle_outline)
+        toolbar.insert(self.btn_outline, -1)
+
         return toolbar
 
     @staticmethod
@@ -490,6 +576,32 @@ class NotebookWindow(Gtk.Window):
         self._tabs = []  # list[EditorTab], parallel to notebook pages
         return self.notebook
 
+    def _build_outline(self):
+        """
+        Pane 4: a tree of the current note's markdown headings. Each row stores
+        the heading title and the 0-based source line to jump to. Hidden until
+        toggled on (the toggle calls _apply_outline_visibility).
+        """
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self.outline_scroll = scroll
+
+        # Columns: display label (str), source line index (int).
+        self.outline_store = Gtk.TreeStore(str, int)
+        self.outline_view = Gtk.TreeView(model=self.outline_store)
+        self.outline_view.set_headers_visible(False)
+        col = Gtk.TreeViewColumn("Outline", Gtk.CellRendererText(), text=0)
+        self.outline_view.append_column(col)
+        self.outline_view.connect("row-activated", self.on_outline_row_activated)
+        # Single click should jump too (not just double-click/Enter).
+        self.outline_view.get_selection().connect(
+            "changed", self.on_outline_selection_changed)
+        self._outline_guard = False
+
+        scroll.add(self.outline_view)
+        scroll.set_no_show_all(True)  # stays hidden until explicitly shown
+        return scroll
+
     def _build_statusbar(self):
         # A horizontal strip: a bold mode indicator (#1) on the left, then the
         # regular statusbar filling the rest.
@@ -508,20 +620,32 @@ class NotebookWindow(Gtk.Window):
     def _apply_icon_set(self):
         """
         Apply a custom icon set from settings.icon_set_dir, if configured and
-        valid. We register the PNGs/SVG under a private icon name in the default
-        Gtk.IconTheme (via add_resource_path is not applicable for loose files,
-        so we use a Gtk.IconFactory-free approach: load the best PNG/SVG as a
-        Pixbuf and set it as the window + default window icon list). Any problem
-        falls back silently to the stock "accessories-text-editor" icon.
+        valid:
+
+          1. Set the running window/taskbar icon directly from the loaded
+             pixbufs (immediate effect for this process).
+          2. Install the files into the user's hicolor icon theme under the
+             private name APP_ICON_NAME and rewrite the per-user .desktop file's
+             Icon= line to match, so *other* launchers (panels, app menus) pick
+             it up. The icon theme is then refreshed so the change is visible
+             without a logout.
+
+        When no/invalid set is configured, the installed theme icons and the
+        desktop Icon= line are reverted to the stock "accessories-text-editor".
+        Every step is best-effort and falls back silently to the stock icon.
         """
         files = icon_set_files(self.settings.icon_set_dir)
         if not files:
-            # No custom set: ensure the stock icon is in force.
+            # No custom set: revert to the stock icon everywhere.
             self.set_icon_name("accessories-text-editor")
+            uninstall_icon_set(APP_ICON_NAME)
+            update_desktop_icon("accessories-text-editor",
+                                exec_path=self._script_path())
+            self._refresh_icon_theme()
             return
+
         from gi.repository import GdkPixbuf
         pixbufs = []
-        # Prefer the SVG (scalable) first if present, then each PNG size.
         sources = []
         if "scalable" in files:
             sources.append(files["scalable"])
@@ -532,6 +656,15 @@ class NotebookWindow(Gtk.Window):
                 pixbufs.append(GdkPixbuf.Pixbuf.new_from_file(path))
             except GLib.Error:
                 continue  # skip an unreadable/invalid image
+
+        # (2) Install into the theme + update the .desktop file so external
+        # launchers resolve the icon by name.
+        if install_icon_set(self.settings.icon_set_dir, APP_ICON_NAME):
+            update_desktop_icon(APP_ICON_NAME,
+                                exec_path=self._script_path())
+            self._refresh_icon_theme()
+
+        # (1) Immediate, in-process window icon.
         if pixbufs:
             try:
                 self.set_icon_list(pixbufs)
@@ -539,24 +672,46 @@ class NotebookWindow(Gtk.Window):
                 return
             except (GLib.Error, TypeError):
                 pass
-        # Fallback if nothing usable loaded.
-        self.set_icon_name("accessories-text-editor")
+        # If the pixbufs failed but the theme install succeeded, fall back to
+        # the themed name; otherwise the stock icon.
+        self.set_icon_name(APP_ICON_NAME)
+
+    @staticmethod
+    def _refresh_icon_theme():
+        """Ask the default Gtk.IconTheme to rescan so freshly installed icons
+        are visible without restarting the session."""
+        try:
+            Gtk.IconTheme.get_default().rescan_if_needed()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    @staticmethod
+    def _script_path():
+        """Absolute path to the entry-point script, for the .desktop Exec line."""
+        import sys
+        return os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else None
 
     def _restore_last_session(self):
         """
-        Reopen the last workspace (if it still exists) and the notes that were
-        open, one per tab. Invalid/missing entries are skipped. Used on startup
-        when "restore session" is enabled and no folder was given on the CLI.
+        Reopen the last workspace (if it still exists), restore the sidebar and
+        note-list selection (panes 1 + 2), and reopen the notes that were open,
+        one per tab. Invalid/missing entries are skipped. Used on startup when
+        "restore session" is enabled and no folder was given on the CLI.
         """
         folder = self.settings.last_workspace
         if not folder or not os.path.isdir(folder):
             return
         self.open_folder(os.path.abspath(folder))
+
+        # (#6) Restore the pane-1 sidebar selection, which reloads pane 2.
+        node = self.settings.last_node
+        if node in (NODE_ALL_NOTES, NODE_INBOX, NODE_EMPTY_NOTES,
+                    NODE_SUBFOLDERS, NODE_SUBFOLDER):
+            self._select_sidebar_node(node, self.settings.last_subfolder)
+
+        # Reopen notes, one per tab. First replaces the initial empty tab.
         notes = [p for p in self.settings.last_open_notes
                  if isinstance(p, str) and os.path.isfile(p)]
-        if not notes:
-            return
-        # First note replaces the initial empty tab; the rest open new tabs.
         first = True
         for path in notes:
             if first:
@@ -566,6 +721,11 @@ class NotebookWindow(Gtk.Window):
                 self._load_note_in_new_tab(model.Note(path))
         if self._tabs:
             self.notebook.set_current_page(0)
+
+        # (#6) Restore the pane-2 note-list selection (after the list reload).
+        sel = self.settings.last_selected_note
+        if sel and os.path.isfile(sel):
+            self._reload_notelist(select_path=sel)
 
     def _apply_editor_font(self):
         """Apply the editor font from settings to every open tab."""
@@ -600,9 +760,21 @@ class NotebookWindow(Gtk.Window):
             tab.set_editable(not self.read_only)
         self.update_status()
 
-    def on_toggle_read_only(self, button):
-        self.read_only = button.get_active()
+    def _set_read_only(self, value):
+        """Single entry point: update state, both widgets, and apply."""
+        self.read_only = bool(value)
+        self._sync_toggle(self.btn_readonly, self.mi_readonly, self.read_only)
         self._apply_read_only()
+
+    def on_toggle_read_only(self, button):
+        if self._syncing_view_toggles:
+            return
+        self._set_read_only(button.get_active())
+
+    def on_menu_toggle_read_only(self, item):
+        if self._syncing_view_toggles:
+            return
+        self._set_read_only(item.get_active())
 
     # --------------------------------------------------------- preview -- #
     def _apply_preview(self):
@@ -612,26 +784,131 @@ class NotebookWindow(Gtk.Window):
             tab.set_preview(self.preview_mode)
         # While previewing, the Read-only toggle is disabled (cannot change).
         self.btn_readonly.set_sensitive(not self.preview_mode)
+        self.mi_readonly.set_sensitive(not self.preview_mode)
         self.update_status()
+        # The outline jumps within the editor; refresh it for the new view.
+        self._refresh_outline()
 
-    def on_toggle_preview(self, button):
-        self.preview_mode = button.get_active()
+    def _set_preview(self, value):
+        self.preview_mode = bool(value)
+        self._sync_toggle(self.btn_preview, self.mi_preview, self.preview_mode)
         self._apply_preview()
 
+    def on_toggle_preview(self, button):
+        if self._syncing_view_toggles:
+            return
+        self._set_preview(button.get_active())
+
+    def on_menu_toggle_preview(self, item):
+        if self._syncing_view_toggles:
+            return
+        self._set_preview(item.get_active())
+
     # ------------------------------------------------------- card view -- #
-    def on_toggle_card_view(self, button):
-        self.card_view = button.get_active()
+    def _set_card_view(self, value):
+        self.card_view = bool(value)
+        self._sync_toggle(self.btn_cardview, self.mi_cardview, self.card_view)
         self._apply_card_view()
         # Re-render the note list, keeping the current selection.
         tab = self._active_tab()
         keep = tab.note.path if (tab and tab.note) else None
         self._reload_notelist(select_path=keep)
 
+    def on_toggle_card_view(self, button):
+        if self._syncing_view_toggles:
+            return
+        self._set_card_view(button.get_active())
+
+    def on_menu_toggle_card_view(self, item):
+        if self._syncing_view_toggles:
+            return
+        self._set_card_view(item.get_active())
+
     def _apply_card_view(self):
         """Show thin horizontal separator lines between cards in card view."""
         lines = (Gtk.TreeViewGridLines.HORIZONTAL if self.card_view
                  else Gtk.TreeViewGridLines.NONE)
         self.note_view.set_grid_lines(lines)
+
+    # --------------------------------------------------------- outline -- #
+    def _set_outline(self, value):
+        self.outline_visible = bool(value)
+        self._sync_toggle(self.btn_outline, self.mi_outline,
+                          self.outline_visible)
+        self._apply_outline_visibility()
+
+    def on_toggle_outline(self, button):
+        if self._syncing_view_toggles:
+            return
+        self._set_outline(button.get_active())
+
+    def on_menu_toggle_outline(self, item):
+        if self._syncing_view_toggles:
+            return
+        self._set_outline(item.get_active())
+
+    def _apply_outline_visibility(self):
+        """Show/hide the outline pane and (re)build it when shown."""
+        if self.outline_visible:
+            self.outline_scroll.show()
+            self.outline_view.show_all()
+            self._refresh_outline()
+        else:
+            self.outline_scroll.hide()
+
+    def _refresh_outline(self):
+        """Rebuild the outline tree from the active tab's current content."""
+        if not getattr(self, "outline_visible", False):
+            return
+        self._outline_guard = True
+        try:
+            self.outline_store.clear()
+            tab = self._active_tab()
+            if tab is None or tab.note is None:
+                self._outline_guard = False
+                return
+            headings = model.parse_headings(tab.get_content())
+            # Build a simple nested tree by heading level using a stack of
+            # (level, iter) frames; deeper levels nest under shallower ones.
+            stack = []  # list of (level, treeiter)
+            for h in headings:
+                level = h["level"]
+                while stack and stack[-1][0] >= level:
+                    stack.pop()
+                parent = stack[-1][1] if stack else None
+                it = self.outline_store.append(
+                    parent, [h["title"], h["line"]])
+                stack.append((level, it))
+            self.outline_view.expand_all()
+        finally:
+            self._outline_guard = False
+
+    def on_outline_row_activated(self, _view, path, _col):
+        treeiter = self.outline_store.get_iter(path)
+        self._jump_to_outline_line(self.outline_store[treeiter][1])
+
+    def on_outline_selection_changed(self, selection):
+        if self._outline_guard:
+            return
+        _model, treeiter = selection.get_selected()
+        if treeiter is None:
+            return
+        self._jump_to_outline_line(_model[treeiter][1])
+
+    def _jump_to_outline_line(self, line_index):
+        tab = self._active_tab()
+        if tab is not None and tab.note is not None:
+            tab.scroll_to_line(line_index)
+
+    def _sync_toggle(self, button, menu_item, active):
+        """Set a toolbar ToggleToolButton and a CheckMenuItem to `active`
+        without re-firing their handlers (uses the window guard)."""
+        self._syncing_view_toggles = True
+        try:
+            button.set_active(active)
+            menu_item.set_active(active)
+        finally:
+            self._syncing_view_toggles = False
 
     # --------------------------------------------------------------- tabs -- #
     def _active_tab(self):
@@ -721,6 +998,9 @@ class NotebookWindow(Gtk.Window):
     def _on_tab_changed(self, _tab):
         """Called by a tab when its buffer is edited."""
         self.update_status()
+        # Headings may have changed; refresh the outline if it's the active tab.
+        if _tab is self._active_tab():
+            self._refresh_outline()
 
     def _rebuild_recent_menu(self):
         """Repopulate the File > Open Recent submenu from settings."""
@@ -781,7 +1061,11 @@ class NotebookWindow(Gtk.Window):
         Refresh whenever the active tab has a note open."""
         tab = self._active_tab()
         self.btn_save.set_sensitive(bool(tab and tab.note and tab.dirty))
-        self.btn_refresh.set_sensitive(bool(tab and tab.note))
+        has_note = bool(tab and tab.note)
+        self.btn_refresh.set_sensitive(has_note)
+        # Mirror onto the File menu's Refresh note item.
+        if hasattr(self, "mi_refresh"):
+            self.mi_refresh.set_sensitive(has_note)
 
     def _update_slugify_sensitivity(self):
         """
@@ -811,6 +1095,29 @@ class NotebookWindow(Gtk.Window):
             tab.clear()
         self.update_status()
         self._remember_folder(folder)
+
+    def on_refresh_workspace(self, _widget):
+        """
+        Re-scan the working folder from disk and rebuild panes 1 and 2, keeping
+        the current sidebar selection (and the pane-2 note selection) where
+        possible. Open tabs are left untouched. No-op without a workspace.
+        """
+        if not self.root_folder:
+            self._error_dialog("Open a working folder first (Ctrl+O).")
+            return
+        if not os.path.isdir(self.root_folder):
+            self._error_dialog(
+                f"Working folder no longer exists:\n{self.root_folder}")
+            return
+        # Preserve the pane-2 selection by path across the rebuild.
+        sel = self.note_view.get_selection()
+        _m, it = sel.get_selected()
+        keep = self.note_store[it][1] if it is not None else None
+        # Rebuilding the sidebar with preserve_selection reloads pane 2 via the
+        # selection handler; then restore the note selection.
+        self._reload_sidebar(preserve_selection=True)
+        self._reload_notelist(select_path=keep)
+        self.update_status()
 
     def on_close_workspace(self, _widget):
         """Close the current workspace, returning to the empty initial state."""
@@ -861,11 +1168,18 @@ class NotebookWindow(Gtk.Window):
         if tab is not None:
             tab.highlight_search(self.search_query)
 
-    def _reload_sidebar(self):
+    def _reload_sidebar(self, preserve_selection=False):
+        # Remember the current selection so a refresh doesn't reset it.
+        prev_node = self.current_node
+        prev_sub = self.current_subfolder
+
         self.sidebar_store.clear()
         # Row schema: [icon_name, label, node_kind, subfolder_name]
         self.sidebar_store.append(
             None, ["emblem-documents", "All Notes", NODE_ALL_NOTES, ""])
+        # Inbox: notes sitting at the top level (not yet filed into a subfolder).
+        self.sidebar_store.append(
+            None, ["mail-inbox", "Inbox", NODE_INBOX, ""])
         self.sidebar_store.append(
             None, ["edit-clear", "Empty Notes", NODE_EMPTY_NOTES, ""])
 
@@ -876,16 +1190,27 @@ class NotebookWindow(Gtk.Window):
                 self.sidebar_store.append(
                     subfolders_iter, ["folder", sub, NODE_SUBFOLDER, sub])
 
-        # Expand the Subfolders branch so its children are visible, and select
-        # "All Notes" by default.
+        # Expand the Subfolders branch so its children are visible.
         self.sidebar_view.expand_all()
-        self.sidebar_view.get_selection().select_path(Gtk.TreePath.new_first())
+
+        if preserve_selection and prev_node is not None:
+            # Restore the prior selection if it still exists; else fall back to
+            # All Notes. _select_sidebar_node reloads pane 2 via its handler.
+            if not self._select_sidebar_node(prev_node, prev_sub):
+                self.sidebar_view.get_selection().select_path(
+                    Gtk.TreePath.new_first())
+        else:
+            # Default: select "All Notes".
+            self.sidebar_view.get_selection().select_path(
+                Gtk.TreePath.new_first())
 
     def _notes_for_current_subfolder(self):
         if not self.root_folder:
             return []
         if self.current_node == NODE_ALL_NOTES:
             return model.collect_notes(self.root_folder)
+        if self.current_node == NODE_INBOX:
+            return model.collect_top_level_notes(self.root_folder)
         if self.current_node == NODE_EMPTY_NOTES:
             return model.collect_empty_notes(self.root_folder)
         if self.current_node == NODE_SUBFOLDER and self.current_subfolder:
@@ -959,6 +1284,7 @@ class NotebookWindow(Gtk.Window):
             return
         tab.highlight_search(self.search_query)
         self.update_status()
+        self._refresh_outline()
 
     def _load_note_in_new_tab(self, note):
         tab = self._new_tab(focus=True)
@@ -967,6 +1293,7 @@ class NotebookWindow(Gtk.Window):
             return
         tab.highlight_search(self.search_query)
         self.update_status()
+        self._refresh_outline()
 
     def _save_active(self):
         tab = self._active_tab()
@@ -1181,7 +1508,12 @@ class NotebookWindow(Gtk.Window):
         self._reload_notelist(select_path=note_path)
 
     def _select_sidebar_node(self, node_kind, subfolder=None):
-        """Programmatically select a sidebar row by kind (and subfolder name)."""
+        """
+        Programmatically select a sidebar row by kind (and subfolder name).
+        Returns True if a matching row was found and selected, else False.
+        """
+        found = {"hit": False}
+
         def _match(model_, _path, treeiter):
             if model_[treeiter][2] != node_kind:
                 return False
@@ -1189,8 +1521,11 @@ class NotebookWindow(Gtk.Window):
                 return False
             self.sidebar_view.expand_to_path(model_.get_path(treeiter))
             self.sidebar_view.get_selection().select_iter(treeiter)
-            return True
+            found["hit"] = True
+            return True  # stop iteration
+
         self.sidebar_store.foreach(_match)
+        return found["hit"]
 
     def _copy_path_to_clipboard(self, path):
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
@@ -1212,6 +1547,7 @@ class NotebookWindow(Gtk.Window):
             if 0 <= page_num < len(self._tabs):
                 self._tabs[page_num].highlight_search(self.search_query)
             self.update_status()
+            self._refresh_outline()
 
     def on_new_tab(self, _widget):
         self._new_tab(focus=True)
@@ -1395,13 +1731,22 @@ class NotebookWindow(Gtk.Window):
 
     def _save_session(self):
         """
-        Persist the current workspace and the set of open notes so they can be
-        restored next launch (only meaningful when "restore session" is on, but
-        we record it regardless so toggling the option later just works).
+        Persist the current workspace, the set of open notes, and the sidebar /
+        note-list selection so they can be restored next launch (only meaningful
+        when "restore session" is on, but we record it regardless so toggling the
+        option later just works).
         """
         open_notes = [tab.note.path for tab in self._tabs
                       if tab.note is not None]
-        self.settings.set_last_session(self.root_folder, open_notes)
+        # Current pane-2 selection (path), if any.
+        sel = self.note_view.get_selection()
+        _m, it = sel.get_selected()
+        selected_note = self.note_store[it][1] if it is not None else None
+        self.settings.set_last_session(
+            self.root_folder, open_notes,
+            node=self.current_node,
+            subfolder=self.current_subfolder,
+            selected_note=selected_note)
         self.settings.save()
 
     def _confirm_close_all(self):
