@@ -386,9 +386,15 @@ class PanesMixin:
         self.sidebar_store.foreach(_match)
         return found["hit"]
 
-    def _refresh_outline(self):
+    def _refresh_outline(self, tab=None):
         """
-        Rebuild the outline tree (pane 4) from the active tab's current text.
+        Rebuild the outline tree (pane 4) from a tab's current text.
+
+        `tab` defaults to the active tab. It is passed explicitly by the
+        "switch-page" handler: that signal fires *before* Gtk.Notebook updates
+        its current-page index, so `_active_tab()` (which reads
+        get_current_page()) would still return the previously-viewed tab there.
+        Passing the switched-to tab in avoids showing the wrong note's outline.
 
         Headings come from model.parse_headings (pure parsing, no GTK). We turn
         the flat list into a nested TreeStore by tracking a stack of open
@@ -402,7 +408,8 @@ class PanesMixin:
         self._outline_guard = True
         try:
             self.outline_store.clear()
-            tab = self._active_tab()
+            if tab is None:
+                tab = self._active_tab()
             if tab is None or tab.note is None:
                 self._outline_guard = False
                 return

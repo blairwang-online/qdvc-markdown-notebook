@@ -490,6 +490,11 @@ shows/hides the scroll and, when shown, calls `_refresh_outline()`, which clears
 the store and rebuilds it from `model.parse_headings(active_tab.get_content())`,
 nesting rows by heading level using a `(level, iter)` stack, then `expand_all()`.
 It is refreshed on note load, tab switch, buffer change, and preview toggle.
+`_refresh_outline(tab=None)` defaults to the active tab, but `on_tab_switched`
+passes the switched-to tab explicitly: GTK's `switch-page` fires *before* the
+notebook updates its current-page index, so `_active_tab()` would still return
+the previously-viewed tab there (this was a real bug — the outline showed the
+prior note's headings after a switch).
 Clicking a row (`row-activated`) or selecting it (`changed`, guarded by
 `_outline_guard`) calls `_jump_to_outline_line` → `tab.scroll_to_line(line)`.
 
@@ -754,6 +759,11 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   from the `gtk3_` code. The two deliberate exceptions are pure punctuation (the
   truncation ellipsis and the window-title em-dash). Icon names, Pango markup
   tags, and `config.SORT_*`/`NODE_*` identifiers are not UI text and stay put.
+- **`Gtk.Notebook` "switch-page" fires before the page index updates.** Inside
+  `on_tab_switched`, use the `page_num` argument GTK hands you, not
+  `get_current_page()`/`_active_tab()` — those still report the *old* tab at that
+  moment. (This bit the outline once: it showed the previous note's headings on
+  switch. `_refresh_outline` now takes the switched-to tab explicitly.)
 
 ## 7. Suggested next features
 

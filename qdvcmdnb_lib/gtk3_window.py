@@ -633,12 +633,20 @@ class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
 
     def on_tab_switched(self, _notebook, _page, page_num):
         # Notebook "switch-page" handler: page_num is the newly active tab index.
+        # NOTE: this fires *before* the notebook's current-page index updates, so
+        # we must use page_num here rather than _active_tab()/get_current_page()
+        # (which still report the previously-viewed tab at this point). That
+        # staleness was the cause of the outline showing the wrong note's
+        # headings on tab switch.
         # GTK fires this during construction too; guard via _tabs presence.
         if getattr(self, "_tabs", None):
-            if 0 <= page_num < len(self._tabs):
-                self._tabs[page_num].highlight_search(self.search_query)
+            switched_to = (self._tabs[page_num]
+                           if 0 <= page_num < len(self._tabs) else None)
+            if switched_to is not None:
+                switched_to.highlight_search(self.search_query)
             self.update_status()
-            self._refresh_outline()
+            # Pass the switched-to tab explicitly (see above).
+            self._refresh_outline(switched_to)
 
     def on_new_tab(self, _widget):
         # Menu/Ctrl+T handler → open a fresh empty tab and focus it.
