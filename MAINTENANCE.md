@@ -156,9 +156,20 @@ This is the **model** side of preferences (the *view* is `gtk3_preferences.py`,
   if you need to support very large files, switch to highlighting only the
   changed line range (track via the buffer's `insert-text`/`delete-range`).
 - Fenced code blocks (```` ``` ````) are tracked with the `in_fence` toggle as
-  lines are scanned in order. Line-level rules (headings, blockquotes, lists,
-  hr) and inline rules (inline code, bold, italic, links) are separate lists of
-  `(tag_name, compiled_regex, group)` tuples.
+  lines are scanned in order. Headings are matched first via `_heading_rgx`
+  (which captures the leading `#`s), then the other line-level rules
+  (blockquotes, lists, hr) and inline rules (inline code, bold, italic, links),
+  each a list of `(tag_name, compiled_regex, group)` tuples.
+- **Per-level heading colours:** there are six heading tags `heading1`..`heading6`
+  in progressively lighter shades of blue (H1 = navy `#204a87`, down to H6
+  `#a8c0e2`). `highlight()` counts the `#`s and applies the matching tag, so deeper
+  headings read as visually subordinate. (Preview mode uses greys instead — see
+  §3.1a.)
+- **Italics** are matched in both the `*asterisk*` and `_underscore_` forms (two
+  alternatives in one regex). The underscore form is word-bounded (so
+  `file_name_here` is not italicised) and neither form matches the doubled
+  bold delimiters. Adding the underscore form fixed italics not rendering for
+  `_text_`.
 - Offsets: the buffer text is split on `\n`; `offset` tracks the character index
   of each line start, `+1` per line for the stripped newline. If you change the
   splitting, keep this accounting correct or tags will land on wrong ranges.
@@ -176,7 +187,10 @@ for Preview mode (no WebKit). Pango markup is inline-only (`<b>`, `<i>`, `<tt>`,
 become sized+bold spans, lists get bullet/number prefixes with indentation,
 blockquotes a `\u2503` bar + italics, fenced/inline code with a grey background,
 horizontal rules a line of dashes, links the underlined coloured text (the URL is
-dropped — markup can't make clickable links). When `code_font` (a Pango
+dropped — markup can't make clickable links). Heading colours come from
+`_HEADING_COLOUR`: black (H1) shading to progressively lighter greys (H2–H6) —
+distinct from the editor's blues (`#000000`, `#2e2e2e`, `#555555`, `#777777`,
+`#999999`, `#b0b0b0`). When `code_font` (a Pango
 font-description string) is supplied, code spans/blocks use it via
 `<span font_desc=...>`; otherwise they fall back to `<tt>` (generic monospace).
 Attribute values are quote-escaped (`_attr_escape`) so a font name with an
@@ -261,8 +275,12 @@ because they already reference these names. The `gtk3_` modules each
 ### 3.2a `gtk3_editortab.py` — `EditorTab` (GTK3)
 Encapsulates one tab's editor state, which previously lived directly on the
 window. Each `EditorTab` owns its own `Gtk.TextView`, `Gtk.TextBuffer`,
-`MarkdownHighlighter`, the `note` open in it (or `None`), and per-tab `dirty` /
-`_loading` flags.
+`MarkdownHighlighter`, the `note` open in it (or `None`), per-tab `dirty` /
+`_loading` flags, and its own **`read_only`** and **`preview`** view state
+(read-only and preview are per-tab; see §3.3). `set_read_only(on)` flips the
+`TextView` editability and the tab-label padlock icon; `set_preview(on)` switches
+the stack child and the tab-label preview icon. `set_editable` is the low-level
+helper `set_read_only` calls.
 - `widget` — the page widget added to the `Gtk.Notebook`. It is a `Gtk.Stack`
   with three named children: `"editor"` (a scrolled `TextView`), `"preview"` (a
   read-only `TextView` showing rendered markdown), and `"placeholder"` (a centred
@@ -270,18 +288,22 @@ window. Each `EditorTab` owns its own `Gtk.TextView`, `Gtk.TextBuffer`,
   when `note is None`, else `"preview"` when `self.preview`, else `"editor"`. It is
   called from `clear()`, `load_note()`, and `set_preview()`. A fresh Ctrl+T tab
   shows the placeholder until a note is loaded.
-- `tab_label` — a horizontal box: an `EventBox`-wrapped title label + a
-  borderless close button (Caja-style, `window-close` icon at `MENU` size). The
-  EventBox (with `visible_window=False`) lets the title receive a right-click,
-  which fires the `on_context_menu(tab, event)` callback (the window shows the
-  tab context menu; no-op when the tab has no note). The title is the note's
-  display name, truncated to `_tab_title_length` characters (default
-  `MAX_TAB_TITLE` = 12, overridable per tab and set from
-  `settings.tab_title_length`) with a trailing ellipsis when longer; a leading
-  `*` marks unsaved changes. Truncation is done in `_refresh_title()` on the
-  string itself (not via Pango width-ellipsize, which depended on allocated width
-  and could clip even short names). `set_tab_title_length(n)` updates the budget
-  and refreshes.
+- `tab_label` — a horizontal box with 2px margins on all sides, holding: two
+  mode-indicator icons at the **start** (a read-only padlock
+  `changes-prevent-symbolic` and a preview `document-page-setup` icon, each at
+  `MENU` = 16px size, created with `set_no_show_all(True)` so only
+  `_refresh_status_icons()` controls their visibility — both can show at once),
+  then an `EventBox`-wrapped title label, then a borderless close button
+  (Caja-style, `window-close` icon at `MENU` size). The EventBox (with
+  `visible_window=False`) lets the title receive a right-click, which fires the
+  `on_context_menu(tab, event)` callback (the window shows the tab context menu;
+  no-op when the tab has no note). The title is the note's display name, truncated
+  to `_tab_title_length` characters (default `MAX_TAB_TITLE` = 12, overridable per
+  tab and set from `settings.tab_title_length`) with a trailing ellipsis when
+  longer; a leading `*` marks unsaved changes. Truncation is done in
+  `_refresh_title()` on the string itself (not via Pango width-ellipsize, which
+  depended on allocated width and could clip even short names).
+  `set_tab_title_length(n)` updates the budget and refreshes.
 - A `key-press-event` handler on the editor `TextView`
   (`_on_textview_key_press`) converts a plain **Tab** keypress into `TAB_SPACES`
   (4) spaces while the view is editable, swallowing the event so focus doesn't
@@ -420,7 +442,11 @@ Key state attributes:
 - `current_node` — the selected sidebar node kind (a `NODE_*` constant).
 - `current_subfolder` — the subfolder **name** when `current_node` is
   `NODE_SUBFOLDER`, else `None`.
-- `read_only` — whether editing is disabled across all tabs (starts `True`).
+- `read_only` / `preview_mode` — **mirrors** of the active tab's per-tab
+  read-only / preview state (each `EditorTab` is the source of truth). Kept
+  current by the toggles and by `_sync_view_toggles_to_tab` on tab switch.
+- `_custom_title` — a session-only user-set window title (`None` = default;
+  see `_update_window_title`).
 - `_tabs` — list of `EditorTab`, parallel to notebook pages.
 - `sort_mode` — one of `SORT_ALPHA`, `SORT_DATE_NEW`, `SORT_DATE_OLD`.
 - `_note_select_guard` — suppresses the note-list `changed` handler while the
@@ -452,34 +478,48 @@ Tab wiring:
 - Quitting/closing the window runs `_confirm_close_all`, which prompts for *every*
   dirty tab before exit.
 
-Read-only mode (toolbar toggle, default on): `self.read_only` is the single source
-of truth, applied by `_apply_read_only()` which calls `tab.set_editable(...)` on
-every tab and refreshes the status bar. `_new_tab` seeds new tabs from it. Edit
-actions are gated on it: New note shows a notice and aborts, and Slugify is
-desensitised in `_update_slugify_sensitivity`. Saving is left allowed (a read-only
-buffer cannot have changed, so it is harmless).
+Read-only and preview are **per-tab** (each `EditorTab` owns its own `read_only`
+and `preview` flags). The toolbar/menu toggles act on, and reflect, the **active
+tab** only; `self.read_only` / `self.preview_mode` on the window are *mirrors* of
+the active tab's state, kept current so the status bar and Slugify gating can read
+them cheaply. New tabs start at the app defaults (read-only on, preview off),
+independent of the other tabs.
 
-Preview mode (toolbar toggle, default off): `self.preview_mode` is window-wide,
-applied by `_apply_preview()` which calls `tab.set_preview(...)` on every tab,
-**disables the Read-only toggle** (both the toolbar button and the menu item) so
-it can't be changed while previewing, refreshes the status bar, and refreshes the
-outline. `_new_tab` seeds new tabs from it.
-In `update_status` the bold mode label shows "Rendered Markdown preview" when
-`preview_mode` is on, overriding the read-only/edit label; otherwise it shows
-"Read-only mode" / "Edit mode" as before. Preview is always read-only by
-construction (the preview `TextView` is non-editable), independent of
-`self.read_only`.
+Read-only mode (toolbar toggle, default on per tab): `_apply_read_only()` calls
+`tab.set_read_only(...)` on the **active** tab (which flips the `TextView`'s
+editability and shows/hides the tab-label padlock icon) and refreshes the status
+bar. Edit actions are gated on the mirror: New note shows a notice and aborts, and
+Slugify is desensitised in `_update_slugify_sensitivity`. Saving is left allowed
+(a read-only buffer cannot have changed, so it is harmless).
+
+Preview mode (toolbar toggle, default off per tab): `_apply_preview()` calls
+`tab.set_preview(...)` on the **active** tab, **disables the Read-only toggle**
+(both the toolbar button and the menu item) so it can't be changed while
+previewing, refreshes the status bar, and refreshes the outline.
+In `update_status` the bold mode label shows "Rendered Markdown preview" when the
+active tab is previewing, overriding the read-only/edit label; otherwise it shows
+"Read-only mode" / "Edit mode". Preview is always read-only by construction (the
+preview `TextView` is non-editable), independent of the tab's `read_only` flag.
+
+On tab switch, `on_tab_switched` calls `_sync_view_toggles_to_tab(tab)`, which
+copies the switched-to tab's `read_only`/`preview` onto the window mirrors, sets
+both toggle widgets to match via `_sync_toggle` (guarded so the handlers don't
+re-fire), and re-locks the Read-only toggle if that tab is previewing. The
+tab-label shows a 16×16 padlock icon while read-only and the preview icon while
+previewing (both can show at once); the tab label also carries 2px of extra
+padding on every side.
 
 Mode-toggle menu↔toolbar sync: each of Read-only, Card view, Preview, and the
 Headings outline exists **both** as a toolbar `Gtk.ToggleToolButton` (`btn_*`) and
 a View-menu `Gtk.CheckMenuItem` (`mi_*`). Each has a single entry point —
 `_set_read_only` / `_set_card_view` / `_set_preview` / `_set_outline` — that
-updates the boolean state, calls `_sync_toggle(button, menu_item, value)` to set
-both widgets without re-firing (guarded by `self._syncing_view_toggles`), then
-applies the effect. The toolbar handlers (`on_toggle_*`) and menu handlers
-(`on_menu_toggle_*`) both early-return when the guard is set and otherwise funnel
-into the matching `_set_*`. Shortcuts: Read-only Ctrl+E, Card view Ctrl+D, Preview
-Ctrl+\` , Outline Ctrl+Shift+O.
+updates the (active-tab or window) state, calls `_sync_toggle(button, menu_item,
+value)` to set both widgets without re-firing (guarded by
+`self._syncing_view_toggles`), then applies the effect. The toolbar handlers
+(`on_toggle_*`) and menu handlers (`on_menu_toggle_*`) both early-return when the
+guard is set and otherwise funnel into the matching `_set_*`. (Card view and the
+outline remain window-wide; only Read-only and Preview are per-tab.) Shortcuts:
+Read-only Ctrl+E, Card view Ctrl+D, Preview Ctrl+\` , Outline Ctrl+Shift+O.
 
 Headings outline (pane 4, toggle default off): `_build_outline()` builds a
 `Gtk.ScrolledWindow` (`outline_scroll`, `set_no_show_all(True)` so it stays hidden)
@@ -513,7 +553,8 @@ it; `on_sidebar_selection_changed` treats it like the other note-listing nodes.
 
 Menus (order **File, Edit, View, Help**): **File** (New note, Save note, Refresh
 note, | Open workspace, Refresh workspace, Close workspace, Open recent workspace,
-| New tab, Close tab, | Quit), **Edit** (Preferences), **View** (Toolbar and
+| New tab, Close tab, | Quit), **Edit** (Preferences, Set window title\u2026),
+  **View** (Toolbar and
 Statusbar `Gtk.CheckMenuItem` toggles, a separator, the Read-only/Card view/
 Preview/Headings outline mode toggles, a separator, then the three sort
 `RadioMenuItem`s), **Help** (About). Refresh note (`mi_refresh`, Ctrl+R) mirrors
@@ -569,6 +610,7 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   All/Inbox/Empty/subfolder reload the list; the Subfolders **parent** shows
   placeholders in both panes (`_show_notelist_placeholder` + `tab.clear()`).
 - Toolbar: built in `_build_toolbar`, style from `_toolbar_style_enum()`. Order:
+  **New tab** (`tab-new`; first item, opens an empty tab via `on_new_tab`),
   **New note**, **Save note** (`btn_save`, `document-save`; starts insensitive and
   is enabled only when the active tab is dirty — `_update_save_sensitivity()`,
   called from `update_status`), **Refresh note** (`btn_refresh`, `view-refresh`;
@@ -582,14 +624,17 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   separator, **Read-only** (`btn_readonly`, active by default), **Preview**
   (`btn_preview`, `document-page-setup` icon, off by default; locks the Read-only
   toggle while active), **Outline** (`btn_outline`, `view-list` icon, off by
-  default — shows/hides pane 4). Separators are `SeparatorToolItem`s with
+  default — shows/hides pane 4), `|` separator, **Window title** (`btn_set_title`,
+  `document-properties`; `on_set_window_title` prompts for a custom window title).
+  Separators are `SeparatorToolItem`s with
   `set_draw(True)` (via `_toolbar_separator()`) so the divider line is visible.
   Card view, Read-only, Preview, and Outline are marked `set_is_important(True)`:
   in the "beside" toolbar style (`BOTH_HORIZ`) only important items show their
-  label beside the icon, so only those are labelled while New/Save/Refresh/Slugify
-  are icon-only; in "below" style (`BOTH`) every item shows its label. Each of
-  Read-only/Card view/Preview/Outline has a matching View-menu `Gtk.CheckMenuItem`
-  kept in sync (see the toggle-sync paragraph above).
+  label beside the icon, so only those are labelled while
+  New-tab/New/Save/Refresh/Slugify/Window-title are icon-only; in "below" style
+  (`BOTH`) every item shows its label. Each of Read-only/Card view/Preview/Outline
+  has a matching View-menu `Gtk.CheckMenuItem` kept in sync (see the toggle-sync
+  paragraph above).
 - Note list (pane 2): a vertical box with a **search row** on top (a `Gtk.Entry`
   with a clear icon + a "Search" `Gtk.Button`) above a `Gtk.Stack`
   (`notelist_stack`). The stack has a "list" child (the scrolled
@@ -667,18 +712,28 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
 - Toggle read-only / card view / preview / outline → from either the toolbar
   button (`on_toggle_*`) or the View-menu item (`on_menu_toggle_*`) into the
   single `_set_*` entry point, which syncs both widgets (`_sync_toggle`, guarded)
-  and applies the effect. Read-only flips editability on all tabs; outline
-  shows/hides pane 4 and rebuilds it.
-- New note → `on_new_note` (blocked with a notice in read-only mode) writes an
-  empty file into the selected subfolder, or the root otherwise, via
-  `model.create_empty_note`, reloads the list, and opens it in the active tab.
+  and applies the effect. Read-only and preview act on the **active tab** only
+  (per-tab state) and update that tab's label icon; card view and outline are
+  window-wide (outline shows/hides pane 4 and rebuilds it).
+- New note → `on_new_note` (blocked with a notice when the active tab is
+  read-only) writes an empty file into the selected subfolder, or the root
+  otherwise, via `model.create_empty_note`, reloads the list, and opens it in the
+  active tab.
 - Slugify → `on_slugify` reads the active tab's live content, derives a slug from
   its H1, **confirms via `_confirm`** (an OK/Cancel `MessageDialog`), then renames
   via `model.rename_note` and refreshes title + list. The button is only sensitive
   in edit mode when those conditions hold (see §3.3 toolbar).
-- New tab (Ctrl+T) → `on_new_tab` → `_new_tab(focus=True)`.
+- New tab (Ctrl+T, or the first toolbar button) → `on_new_tab` →
+  `_new_tab(focus=True)`. New tabs start read-only / not previewing.
 - Switch tabs → Ctrl+Tab / Ctrl+Shift+Tab cycle; Alt+1..9 jump (via
-  `_on_key_press`). On switch, the outline is refreshed for the new active tab.
+  `_on_key_press`). On switch, `on_tab_switched` syncs the Read-only/Preview
+  toggles to the new tab (`_sync_view_toggles_to_tab`), updates panes 1+2 to the
+  new tab's note (`_sync_panes_to_tab`, guarded so it doesn't reopen), and
+  refreshes the outline for the new active tab.
+- Set window title → `on_set_window_title` (Edit menu / toolbar) prompts with an
+  entry; OK applies a custom session-only title, Reset clears back to the
+  default, Cancel does nothing. `_update_window_title` derives the actual title
+  (custom › "app — folder" › "app").
 - Close tab (Ctrl+W / close button) → `on_close_tab` / the tab's close callback →
   `_close_tab`, a no-op at one tab.
 - Save → `_save_active` writes the active tab's content to its note.

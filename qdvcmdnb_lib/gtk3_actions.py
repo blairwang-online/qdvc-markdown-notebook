@@ -433,6 +433,48 @@ class ActionsMixin:
         self._apply_tab_title_length()
         self._apply_icon_set()
 
+    def on_set_window_title(self, _widget):
+        # Prompt for a custom window title. We build a small Gtk.MessageDialog,
+        # add a Gtk.Entry (prefilled with any current custom title) to its
+        # content area, and offer three responses: OK (apply the typed title),
+        # Reset (clear back to the default), and Cancel. The custom title is
+        # session-only and lives on the window as self._custom_title;
+        # _update_window_title re-derives the actual title bar text.
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text=D.SET_TITLE_HEADING,
+        )
+        dialog.format_secondary_text(D.SET_TITLE_PROMPT)
+        dialog.add_buttons(
+            D.BTN_CANCEL, Gtk.ResponseType.CANCEL,
+            D.BTN_RESET, Gtk.ResponseType.REJECT,
+            D.BTN_OK, Gtk.ResponseType.OK,
+        )
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        entry = Gtk.Entry()
+        entry.set_text(self._custom_title or "")
+        entry.set_activates_default(True)  # Enter triggers the default (OK)
+        entry.set_margin_start(12)
+        entry.set_margin_end(12)
+        # MessageDialog keeps its labels in a content box; add the entry there.
+        dialog.get_content_area().add(entry)
+        entry.show()
+
+        resp = dialog.run()
+        if resp == Gtk.ResponseType.OK:
+            text = entry.get_text().strip()
+            self._custom_title = text or None
+            self._update_window_title()
+        elif resp == Gtk.ResponseType.REJECT:
+            # Reset to the default title.
+            self._custom_title = None
+            self._update_window_title()
+        dialog.destroy()
+
     def on_about(self, _widget):
         # Gtk.AboutDialog is a ready-made standard dialog; we set its program
         # name + description, give it a logo, then run/destroy it like any modal.
@@ -664,7 +706,7 @@ class ActionsMixin:
         self.search_query = None
         self._search_no_results = False
         self.search_entry.set_text("")
-        self.set_title(APP_NAME)
+        self._update_window_title()
         self.sidebar_store.clear()
         self.note_store.clear()
         self.notelist_stack.set_visible_child_name("list")

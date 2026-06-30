@@ -33,18 +33,28 @@ class MarkdownHighlighter:
 
         # Compile once. Each entry: (tag_name, compiled_regex, group_index)
         # group_index None means "whole match".
+        # The heading rule captures the leading #'s in group 1 so the highlight
+        # loop can pick a per-level colour (H1..H6 get progressively lighter
+        # shades). The single "heading" tag is no longer used directly.
+        self._heading_rgx = re.compile(r"^(#{1,6})\s.*$")
         self.line_rules = [
-            ("heading", re.compile(r"^#{1,6}\s.*$"), None),
             ("blockquote", re.compile(r"^\s*>.*$"), None),
             ("list", re.compile(r"^\s*([-*+]|\d+\.)\s"), None),
             ("hr", re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$"), None),
         ]
+        # Italics: either *asterisk* form (content has no '*') or _underscore_
+        # form (word-bounded, content has no '_'), but never the doubled (bold)
+        # delimiters. Two alternatives joined so both syntaxes are highlighted.
+        _italic = (r"(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)"
+                   r"|(?<![\w])_(?!_)([^_\n]+?)_(?![\w])")
         self.inline_rules = [
             ("code_inline", re.compile(r"`[^`\n]+`"), None),
             ("bold", re.compile(r"(\*\*|__)(?=\S)(.+?\S)\1"), None),
-            ("italic", re.compile(r"(?<!\*)\*(?!\*)(\S.*?\S|\S)\*(?!\*)"), None),
+            ("italic", re.compile(_italic), None),
             ("link", re.compile(r"\[[^\]]+\]\([^)]+\)"), None),
         ]
+        # Tag names for heading levels 1..6 (index 0 unused), built in _make_tags.
+        self._heading_tags = [None] + [f"heading{i}" for i in range(1, 7)]
 
     def _make_tags(self):
         # Define the styling tags on the buffer's tag table (the registry of all
@@ -62,7 +72,17 @@ class MarkdownHighlighter:
             return tag
 
         # Colours chosen to read well on a light (Pluma-like) background.
-        ensure("heading", foreground="#204a87", weight=Pango.Weight.BOLD)
+        # Headings get progressively lighter shades of blue from H1 (navy) to H6.
+        heading_shades = [
+            "#204a87",  # H1 — navy (unchanged from the original single colour)
+            "#3465a4",  # H2
+            "#5079b8",  # H3
+            "#6a8fc7",  # H4
+            "#8aa8d6",  # H5
+            "#a8c0e2",  # H6
+        ]
+        for i, shade in enumerate(heading_shades, start=1):
+            ensure(f"heading{i}", foreground=shade, weight=Pango.Weight.BOLD)
         ensure("blockquote", foreground="#5c3566", style=Pango.Style.ITALIC)
         ensure("list", foreground="#a40000", weight=Pango.Weight.BOLD)
         ensure("hr", foreground="#888888")
@@ -91,7 +111,8 @@ class MarkdownHighlighter:
         end = buf.get_end_iter()
 
         # Clear all tags first.
-        for name in ("heading", "blockquote", "list", "hr",
+        for name in ("heading1", "heading2", "heading3", "heading4",
+                     "heading5", "heading6", "blockquote", "list", "hr",
                      "code_inline", "code_block", "bold", "italic", "link"):
             buf.remove_tag_by_name(name, start, end)
 
@@ -112,7 +133,15 @@ class MarkdownHighlighter:
             elif in_fence:
                 buf.apply_tag_by_name("code_block", line_start, line_end)
             else:
-                # Line-level rules.
+                # Headings first: pick the per-level tag from the count of #'s
+                # (group 1), so H1..H6 render in progressively lighter shades.
+                hmatch = self._heading_rgx.match(line)
+                if hmatch:
+                    level = min(len(hmatch.group(1)), 6)
+                    s = buf.get_iter_at_offset(offset + hmatch.start())
+                    e = buf.get_iter_at_offset(offset + hmatch.end())
+                    buf.apply_tag_by_name(self._heading_tags[level], s, e)
+                # Other line-level rules.
                 for tag_name, rgx, _ in self.line_rules:
                     if rgx_match := rgx.match(line):
                         s = buf.get_iter_at_offset(offset + rgx_match.start())

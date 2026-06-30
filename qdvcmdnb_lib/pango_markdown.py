@@ -34,6 +34,16 @@ _HEADING_SIZE = {
     6: "small",
 }
 
+# Heading colours for preview mode: black (H1) then progressively lighter greys.
+_HEADING_COLOUR = {
+    1: "#000000",
+    2: "#2e2e2e",
+    3: "#555555",
+    4: "#777777",
+    5: "#999999",
+    6: "#b0b0b0",
+}
+
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _HR_RE = re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$")
 _ULIST_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
@@ -117,8 +127,11 @@ def render(text, code_font=None):
         if m:
             level = len(m.group(1))
             size = _HEADING_SIZE.get(level, "medium")
+            # Preview headings are black (H1) shading to progressively lighter
+            # greys (H2 onwards) — not the editor's blues.
+            colour = _HEADING_COLOUR.get(level, "#b0b0b0")
             out.append(
-                f"<span size='{size}' weight='bold' foreground='#204a87'>"
+                f"<span size='{size}' weight='bold' foreground='{colour}'>"
                 f"{_inline(m.group(2), code_font)}</span>")
             continue
 

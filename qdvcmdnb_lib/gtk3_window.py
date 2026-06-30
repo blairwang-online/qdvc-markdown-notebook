@@ -75,6 +75,9 @@ class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
         self._apply_icon_set()
 
         self.root_folder = None
+        # A user-set custom window title (session-only). None = use the default
+        # ("<app name>" or "<app name> — <folder>"). See _update_window_title.
+        self._custom_title = None
         # Sidebar selection state: a node kind plus, for NODE_SUBFOLDER, the name.
         self.current_node = NODE_ALL_NOTES
         self.current_subfolder = None     # subfolder name when current_node is
@@ -303,9 +306,15 @@ class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
 
     # ------------------------------------------------------- read-only -- #
     def _apply_read_only(self):
-        """Reflect self.read_only across all tabs and the status bar."""
-        for tab in self._tabs:
-            tab.set_editable(not self.read_only)
+        """Apply read-only to the ACTIVE tab and refresh the status bar.
+
+        Read-only is now per-tab: the toolbar/menu toggle reflects and changes
+        only the current tab. `self.read_only` mirrors the active tab's state so
+        the rest of the window (status bar, Slugify gating) can read it cheaply.
+        """
+        tab = self._active_tab()
+        if tab is not None:
+            tab.set_read_only(self.read_only)
         self.update_status()
 
     def _set_read_only(self, value):
@@ -333,9 +342,11 @@ class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
 
     # --------------------------------------------------------- preview -- #
     def _apply_preview(self):
-        """Reflect self.preview_mode across all tabs and lock the read-only
-        button while preview is active (preview is always read-only)."""
-        for tab in self._tabs:
+        """Apply preview to the ACTIVE tab and lock the read-only toggle while
+        previewing (preview is always read-only by construction). Per-tab, like
+        read-only: `self.preview_mode` mirrors the active tab's state."""
+        tab = self._active_tab()
+        if tab is not None:
             tab.set_preview(self.preview_mode)
         # While previewing, the Read-only toggle is disabled (cannot change).
         self.btn_readonly.set_sensitive(not self.preview_mode)
@@ -346,7 +357,7 @@ class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
 
     def _set_preview(self, value):
         # Single entry point for the preview toggle: update state, mirror both
-        # widgets (guarded), then apply across tabs.
+        # widgets (guarded), then apply to the active tab.
         self.preview_mode = bool(value)
         self._sync_toggle(self.btn_preview, self.mi_preview, self.preview_mode)
         self._apply_preview()
@@ -486,8 +497,10 @@ class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
         tab.apply_preview_font(self.settings.preview_font)
         tab.apply_editor_line_spacing(self.settings.editor_line_spacing)
         tab.apply_preview_line_spacing(self.settings.preview_line_spacing)
-        tab.set_editable(not self.read_only)
-        tab.set_preview(self.preview_mode)
+        # Per-tab view state starts at the app defaults (read-only on, preview
+        # off), independent of whatever the other tabs are showing.
+        tab.set_read_only(True)
+        tab.set_preview(False)
         self._tabs.append(tab)
         idx = self.notebook.append_page(tab.widget, tab.tab_label)
         self.notebook.set_tab_reorderable(tab.widget, True)
@@ -611,16 +624,25 @@ class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
 
 
     # ------------------------------------------------------ folder logic -- #
+    def _update_window_title(self):
+        # Set the window's title bar. A user-set custom title wins; otherwise we
+        # show the app name, plus the open folder when there is one.
+        if self._custom_title:
+            self.set_title(self._custom_title)
+        elif self.root_folder:
+            self.set_title(f"{APP_NAME} \u2014 {self.root_folder}")
+        else:
+            self.set_title(APP_NAME)
+
     def open_folder(self, folder):
         # Switch the app to a new working folder: validate it, store it, retitle
-        # the window (set_title updates the title bar), reset the sidebar
-        # selection to All Notes, repopulate panes 1 and 2 from disk, clear the
-        # active tab, and record the folder in the recent list.
+        # the window, reset the sidebar selection to All Notes, repopulate panes
+        # 1 and 2 from disk, clear the active tab, and record it as recent.
         if not folder or not os.path.isdir(folder):
             self._error_dialog(strings.Dialog.not_a_folder(folder))
             return
         self.root_folder = folder
-        self.set_title(f"{APP_NAME} \u2014 {folder}")
+        self._update_window_title()
         self.current_node = NODE_ALL_NOTES
         self.current_subfolder = None
         self._reload_sidebar()
@@ -644,9 +666,27 @@ class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
                            if 0 <= page_num < len(self._tabs) else None)
             if switched_to is not None:
                 switched_to.highlight_search(self.search_query)
+                # Read-only/preview are per-tab: reflect the new tab's state on
+                # the toolbar + menu toggles (without firing their handlers).
+                self._sync_view_toggles_to_tab(switched_to)
+            # Make panes 1 and 2 track the note now shown (without reopening it).
+            self._sync_panes_to_tab(switched_to)
             self.update_status()
             # Pass the switched-to tab explicitly (see above).
             self._refresh_outline(switched_to)
+
+    def _sync_view_toggles_to_tab(self, tab):
+        """Reflect a tab's per-tab read-only/preview state on the Read-only and
+        Preview toggles (toolbar buttons + menu items), and mirror it onto the
+        window's `read_only`/`preview_mode` fields that the status bar and
+        Slugify gating read. Guarded so setting the widgets doesn't re-fire the
+        toggle handlers. Also re-locks the Read-only toggle while previewing."""
+        self.read_only = tab.read_only
+        self.preview_mode = tab.preview
+        self._sync_toggle(self.btn_readonly, self.mi_readonly, self.read_only)
+        self._sync_toggle(self.btn_preview, self.mi_preview, self.preview_mode)
+        self.btn_readonly.set_sensitive(not self.preview_mode)
+        self.mi_readonly.set_sensitive(not self.preview_mode)
 
     def on_new_tab(self, _widget):
         # Menu/Ctrl+T handler → open a fresh empty tab and focus it.

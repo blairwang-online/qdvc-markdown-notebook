@@ -30,6 +30,12 @@ MAX_TAB_TITLE = 12  # default characters before truncation (configurable in
                     # Preferences; the window passes the user's choice in)
 TAB_SPACES = 4      # spaces a Tab key expands to in edit mode
 
+# Icon names shown at the start of a tab label to indicate that tab's mode.
+# These match the toolbar's Read-only / Preview buttons so the cues are
+# consistent. Drawn at 16x16 (Gtk.IconSize.MENU).
+READONLY_ICON_NAME = "changes-prevent-symbolic"
+PREVIEW_ICON_NAME = "document-page-setup"
+
 
 class EditorTab:
     """
@@ -65,6 +71,7 @@ class EditorTab:
         self.dirty = False
         self._loading = False
         self.preview = False  # whether this tab is showing rendered markdown
+        self.read_only = True  # per-tab read-only state (app default: on)
         self._code_font = code_font     # used when rendering preview code spans
         self._preview_font = None       # body font for the preview view
 
@@ -120,9 +127,28 @@ class EditorTab:
         self.widget.set_visible_child_name("placeholder")
         self.widget.show_all()
 
-        # ---- tab label (title + close button) ----
+        # ---- tab label (status icons + title + close button) ----
         self.tab_label = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
                                  spacing=4)
+        # 2px extra padding on every side of the tab contents (the request).
+        self.tab_label.set_margin_top(2)
+        self.tab_label.set_margin_bottom(2)
+        self.tab_label.set_margin_start(2)
+        self.tab_label.set_margin_end(2)
+
+        # Mode-indicator icons at the START of the label: a read-only padlock and
+        # a preview icon, each shown only when that mode is on for THIS tab. We
+        # use set_no_show_all so a blanket show_all() doesn't reveal them; their
+        # visibility is driven by _refresh_status_icons().
+        self._readonly_icon = Gtk.Image.new_from_icon_name(
+            READONLY_ICON_NAME, Gtk.IconSize.MENU)
+        self._preview_icon = Gtk.Image.new_from_icon_name(
+            PREVIEW_ICON_NAME, Gtk.IconSize.MENU)
+        for ic in (self._readonly_icon, self._preview_icon):
+            ic.set_no_show_all(True)
+        self.tab_label.pack_start(self._readonly_icon, False, False, 0)
+        self.tab_label.pack_start(self._preview_icon, False, False, 0)
+
         self._title_label = Gtk.Label(label=UNTITLED_LABEL)
         # The title sits in an EventBox so it can receive button-press events
         # (a plain Gtk.Box/Label has no input window). Right-clicking it raises
@@ -144,6 +170,7 @@ class EditorTab:
         self.tab_label.pack_start(self._title_event_box, True, True, 0)
         self.tab_label.pack_start(close_btn, False, False, 0)
         self.tab_label.show_all()
+        self._refresh_status_icons()
 
         self._refresh_title()
         self._update_view_mode()
@@ -180,6 +207,16 @@ class EditorTab:
         else:
             self.widget.set_visible_child_name("editor")
 
+    def _refresh_status_icons(self):
+        """Show/hide the tab-label mode icons to match this tab's state.
+
+        set_visible toggles each icon (they were created with no_show_all so a
+        global show_all() won't override this). Read-only and preview can both
+        be on, so both icons may show at once.
+        """
+        self._readonly_icon.set_visible(self.read_only)
+        self._preview_icon.set_visible(self.preview)
+
     def set_preview(self, on):
         """
         Turn rendered-markdown preview on/off for this tab. When turning on, the
@@ -189,6 +226,7 @@ class EditorTab:
         if self.preview:
             self._render_preview()
         self._update_view_mode()
+        self._refresh_status_icons()
 
     def _render_preview(self):
         """Render the current editor content to the read-only preview buffer."""
@@ -257,9 +295,19 @@ class EditorTab:
         self.preview_view.set_pixels_inside_wrap(int(pixels))
 
     def set_editable(self, editable):
-        """Toggle whether the user can modify this tab's text (read-only mode)."""
+        """Toggle whether the user can modify this tab's text (read-only mode).
+        Low-level: just flips the TextView. Prefer set_read_only, which also
+        tracks the per-tab flag and the tab-label icon."""
         self.text_view.set_editable(editable)
         self.text_view.set_cursor_visible(editable)
+
+    def set_read_only(self, on):
+        """Set this tab's read-only state, update the editor, and refresh the
+        tab-label padlock icon. This is the per-tab entry point used by the
+        window's Read-only toggle."""
+        self.read_only = bool(on)
+        self.set_editable(not self.read_only)
+        self._refresh_status_icons()
 
     def highlight_search(self, query):
         """

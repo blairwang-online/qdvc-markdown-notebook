@@ -70,6 +70,7 @@ class Menu:
 
     # Edit menu.
     PREFERENCES = "Preferences\u2026"
+    SET_WINDOW_TITLE = "Set window title\u2026"
 
     # View menu (check/radio items).
     TOOLBAR = "Toolbar"
@@ -89,6 +90,8 @@ class Menu:
 class Toolbar:
     """Toolbar button labels and their hover tooltips."""
 
+    NEW_TAB = "New tab"
+    NEW_TAB_TIP = "Open a new tab"
     NEW_NOTE = "New note"
     NEW_NOTE_TIP = "Create a new note in the selected folder"
     SAVE_NOTE = "Save note"
@@ -105,6 +108,8 @@ class Toolbar:
     PREVIEW_TIP = "Preview rendered markdown (read-only)"
     OUTLINE = "Outline"
     OUTLINE_TIP = "Show the headings outline of the current note"
+    SET_TITLE = "Window title"
+    SET_TITLE_TIP = "Set a custom window title"
 
 
 class Sidebar:
@@ -205,6 +210,13 @@ class Dialog:
     BTN_OPEN = "_Open"
     BTN_SAVE = "_Save"
     BTN_DISCARD = "Discard"
+    BTN_OK = "_OK"
+    BTN_RESET = "_Reset to default"
+
+    # Set custom window title.
+    SET_TITLE_HEADING = "Set window title"
+    SET_TITLE_PROMPT = ("Enter a custom window title, or leave blank / reset to "
+                        "use the default.")
 
     # Move / rename confirmations (primary lines).
     MOVE_TITLE = "Move this note?"

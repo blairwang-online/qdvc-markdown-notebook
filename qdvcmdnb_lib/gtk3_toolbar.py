@@ -41,6 +41,13 @@ class ToolbarMixin:
         self.toolbar = toolbar
         toolbar.set_style(self._toolbar_style_enum())
 
+        # New tab — first item, even before New note (it opens an empty tab).
+        btn_new_tab = Gtk.ToolButton(icon_name="tab-new")
+        btn_new_tab.set_label(S.NEW_TAB)
+        btn_new_tab.set_tooltip_text(S.NEW_TAB_TIP)
+        btn_new_tab.connect("clicked", self.on_new_tab)
+        toolbar.insert(btn_new_tab, -1)
+
         btn_new = Gtk.ToolButton(icon_name="document-new")
         btn_new.set_label(S.NEW_NOTE)
         btn_new.set_tooltip_text(S.NEW_NOTE_TIP)
@@ -119,6 +126,15 @@ class ToolbarMixin:
         self.btn_outline.set_is_important(True)
         self.btn_outline.connect("toggled", self.on_toggle_outline)
         toolbar.insert(self.btn_outline, -1)
+
+        toolbar.insert(self._toolbar_separator(), -1)
+
+        # Set a custom window title.
+        self.btn_set_title = Gtk.ToolButton(icon_name="document-properties")
+        self.btn_set_title.set_label(S.SET_TITLE)
+        self.btn_set_title.set_tooltip_text(S.SET_TITLE_TIP)
+        self.btn_set_title.connect("clicked", self.on_set_window_title)
+        toolbar.insert(self.btn_set_title, -1)
 
         return toolbar
 

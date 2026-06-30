@@ -142,6 +142,11 @@ class MenuBarMixin:
         mi_prefs.connect("activate", self.on_preferences)
         edit_menu.append(mi_prefs)
 
+        mi_set_title = self._icon_menu_item(Menu.SET_WINDOW_TITLE,
+                                            "document-properties")
+        mi_set_title.connect("activate", self.on_set_window_title)
+        edit_menu.append(mi_set_title)
+
         menubar.append(edit_item)
 
         # ---- View menu ----

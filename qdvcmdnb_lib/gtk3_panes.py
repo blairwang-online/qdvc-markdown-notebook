@@ -386,6 +386,54 @@ class PanesMixin:
         self.sidebar_store.foreach(_match)
         return found["hit"]
 
+    def _sync_panes_to_tab(self, tab):
+        """
+        Update the pane-1 (sidebar) and pane-2 (note list) selections to match
+        the note shown in `tab`, without reopening it.
+
+        Used on tab switch so the panes track the visible note. The note is
+        already loaded in the tab, so we must NOT let the note-list selection
+        re-trigger a load into the active tab — we wrap the reselection in
+        _note_select_guard. An empty/note-less tab leaves the selection alone.
+        Determining the owning subfolder mirrors _locate_note_in_panes.
+        """
+        if tab is None or tab.note is None or not self.root_folder:
+            return
+        note_path = tab.note.path
+        note_dir = os.path.abspath(os.path.dirname(note_path))
+        root = os.path.abspath(self.root_folder)
+        target_node = NODE_ALL_NOTES
+        target_sub = None
+        try:
+            rel = os.path.relpath(note_dir, root)
+        except ValueError:
+            rel = ""
+        if rel and not rel.startswith(".."):
+            first = rel.split(os.sep)[0]
+            if first and first != ".":
+                target_sub = first
+                target_node = NODE_SUBFOLDER
+
+        # Only change the sidebar node if it doesn't already show this note's
+        # folder, to avoid a needless pane-2 rebuild. Selecting a sidebar row
+        # fires on_sidebar_selection_changed → _reload_notelist().
+        if (self.current_node != target_node
+                or (target_node == NODE_SUBFOLDER
+                    and self.current_subfolder != target_sub)):
+            self._select_sidebar_node(target_node, target_sub)
+
+        # Select the note's row in pane 2 without reopening it (guarded).
+        self._note_select_guard = True
+        try:
+            sel = self.note_view.get_selection()
+            sel.unselect_all()
+            for row in self.note_store:
+                if row[1] == note_path:
+                    sel.select_iter(row.iter)
+                    break
+        finally:
+            self._note_select_guard = False
+
     def _refresh_outline(self, tab=None):
         """
         Rebuild the outline tree (pane 4) from a tab's current text.
