@@ -9,25 +9,47 @@ dependencies beyond `gi` (PyGObject). It edits markdown files **in place** on
 disk; there is no database, index, or cache.
 
 The code is organised as a thin entry-point script plus an internal package,
-following an MVC-flavoured layering (adapted for GTK, where view and controller
-are necessarily intertwined):
+split into two layers so the lower one could be reused by a future GTK4 port:
+a **GTK-free core** (data / application logic) and a **GTK3 view/controller**
+whose modules are all prefaced `gtk3_`.
 
 ```
 qdvc_markdown_notebook.py        # entry point: argv parsing, builds window, Gtk.main()
 qdvcmdnb_lib/
     __init__.py
-    config.py                    # constants, sort modes, ALL_NOTES sentinel (no GTK, no I/O)
-    settings.py                  # persistent user settings: YAML under ~/.config (no GTK)
-    model.py                     # data layer: Note + filesystem + disk I/O (no GTK)
-    highlighter.py               # MarkdownHighlighter (GTK TextBuffer tagging)
-    editortab.py                 # EditorTab: one tab's editor widget + state
-    preferences.py               # PreferencesDialog: fonts + toolbar style
-    window.py                    # NotebookWindow: view + controller
+    # ---- GTK-free core (no GTK import; unit-testable headless) ----
+    config.py                    # constants, sort modes, NODE_* kinds, ALL_NOTES sentinel
+    model.py                     # data layer: Note + filesystem + disk I/O + outline parse
+    settings.py                  # persistent user settings (YAML) + icon-set/.desktop install
+    pango_markdown.py            # Markdown → Pango-markup string renderer (no GTK widget)
+    # ---- GTK3 view/controller (prefaced gtk3_) ----
+    gtk3_highlighter.py          # MarkdownHighlighter (GTK TextBuffer tagging)
+    gtk3_editortab.py            # EditorTab: one tab's editor widget + state
+    gtk3_preferences.py          # PreferencesDialog: the *view* for settings.py
+    gtk3_menubar.py              # MenuBarMixin: the window's menu bar
+    gtk3_toolbar.py              # ToolbarMixin: the window's toolbar + styling
+    gtk3_panes.py                # PanesMixin: the four panes + their data binding
+    gtk3_actions.py              # ActionsMixin: handlers, context menus, dialogs
+    gtk3_window.py               # NotebookWindow: composes the mixins (view + controller)
 ```
 
-The key boundary: **`window.py` never touches the filesystem directly.** All
-disk reads/writes/creation go through `model.py`. `config.py` and `model.py`
-import no GTK at all and are unit-testable without a display.
+Two key boundaries:
+
+1. **The GTK3 layer never touches the filesystem directly.** All disk
+   reads/writes/creation go through `model.py` (and `settings.py` for config).
+   The core modules import no GTK and are unit-testable without a display.
+2. **`settings.py` (model) is paired with `gtk3_preferences.py` (view).** The
+   former is *what is stored/loaded*; the latter is *the window for editing it*.
+   Naming them as a model/view pair (data vs `gtk3_`) is meant to make that split
+   obvious to a newcomer.
+
+`NotebookWindow` itself is assembled from mixins via multiple inheritance
+(`class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
+Gtk.Window)`) purely to keep each file readable — it is one class at runtime, so
+all methods share `self` and there is no behavioural difference from the former
+single `window.py`. The future intent (per the maintainer) is that a `gtk4_`
+module set could sit alongside the `gtk3_` one, selectable from Preferences,
+reusing the entire GTK-free core.
 
 Run modes:
 
@@ -55,9 +77,15 @@ highlighting is done with regexes against a `Gtk.TextBuffer` and tag table.
 
 ## 3. Architecture
 
-Five logical parts, one per module:
+The modules group into the **GTK-free core** — `config` (§3.0), `settings`
+(§3.0a), `pango_markdown` (§3.1a) and `model` (§3.2) — and the **GTK3
+view/controller**, all `gtk3_`-prefixed: `gtk3_highlighter` (§3.1),
+`gtk3_editortab` (§3.2a), `gtk3_preferences` (§3.2b) and the `NotebookWindow`
+mixins (§3.3). The subsection numbers below are historical labels, not a strict
+layer ordering. The core imports no GTK and is unit-testable headless; the GTK3
+layer depends on the core but never the reverse.
 
-### 3.0 `config.py`
+### 3.0 `config.py` (core)
 Plain constants only — `APP_NAME`, `MARKDOWN_EXTENSIONS`, the `SORT_*` mode
 strings, the `ALL_NOTES` sentinel, and the sidebar `NODE_*` kind strings
 (`NODE_ALL_NOTES`, `NODE_INBOX`, `NODE_EMPTY_NOTES`, `NODE_SUBFOLDERS`,
@@ -66,7 +94,9 @@ GTK, no I/O, so it is safe to import from anywhere. `ALL_NOTES` is an `object()`
 compare with `is`, never `==`. (`ALL_NOTES` predates the tree sidebar; the sidebar
 now uses the `NODE_*` kinds instead.)
 
-### 3.0a `settings.py` — persistent user settings (no GTK)
+### 3.0a `settings.py` — persistent user settings (core; no GTK)
+This is the **model** side of preferences (the *view* is `gtk3_preferences.py`,
+§3.2b): it defines what is stored and how it is loaded/validated/saved.
 - Stores settings as YAML at `$XDG_CONFIG_HOME/qdvcmdnb/config.yml`, falling back
   to `~/.config/qdvcmdnb/config.yml`. Resolve via `config_dir()` / `config_path()`.
 - `Settings` holds `editor_font`, `code_font`, and `preview_font` (Pango
@@ -117,7 +147,7 @@ now uses the `NODE_*` kinds instead.)
   migrations and add handling in `_apply()`.
 - No GTK import — unit-testable headless.
 
-### 3.1 `highlighter.py` — `MarkdownHighlighter`
+### 3.1 `gtk3_highlighter.py` — `MarkdownHighlighter` (GTK3)
 - Owns the editor `Gtk.TextBuffer`'s tag table and applies colour/weight tags.
 - `_make_tags()` defines tags once (idempotent via `table.lookup`).
 - `highlight()` clears all tags over the whole buffer and re-applies them. It is
@@ -138,7 +168,7 @@ now uses the `NODE_*` kinds instead.)
   the rest of the editor uses `editor_font`. The constructor takes `code_font`
   and applies it immediately, so already-loaded text reflects the font.
 
-### 3.1a `pango_markdown.py` — Markdown → Pango markup (no GTK)
+### 3.1a `pango_markdown.py` — Markdown → Pango markup (core; no GTK)
 `render(text, code_font=None)` converts a Markdown subset to a Pango markup string
 for Preview mode (no WebKit). Pango markup is inline-only (`<b>`, `<i>`, `<tt>`,
 `<span>`, size/weight/foreground), so block structure is approximated: headings
@@ -154,7 +184,7 @@ escaped but not further interpreted. The output is always well-formed markup. Pu
 text→text, no GTK, so it is unit-testable. Deliberately lightweight (same "good
 enough" philosophy as the highlighter), not a full CommonMark parser.
 
-### 3.2 `model.py` — data layer (no GTK)
+### 3.2 `model.py` — data layer (core; no GTK)
 - `Note` — a thin wrapper over a file path; caches `name` and `mtime`.
   `display_name()` strips a known markdown extension for the list label.
 - `is_markdown(filename)` — extension check against `MARKDOWN_EXTENSIONS`.
@@ -210,7 +240,7 @@ enough" philosophy as the highlighter), not a full CommonMark parser.
   isn't mistaken for a heading; closing ATX `#`s are stripped from the title; a
   `#` with no following space is not a heading. Pure text→list, no GTK, testable.
 
-### 3.2a `editortab.py` — `EditorTab`
+### 3.2a `gtk3_editortab.py` — `EditorTab` (GTK3)
 Encapsulates one tab's editor state, which previously lived directly on the
 window. Each `EditorTab` owns its own `Gtk.TextView`, `Gtk.TextBuffer`,
 `MarkdownHighlighter`, the `note` open in it (or `None`), and per-tab `dirty` /
@@ -269,8 +299,9 @@ window. Each `EditorTab` owns its own `Gtk.TextView`, `Gtk.TextBuffer`,
 - `_loading` guards the buffer `changed` signal during programmatic text sets,
   exactly as the single-editor version did — but now per tab.
 
-### 3.2b `preferences.py` — `PreferencesDialog`
-A modal `Gtk.Dialog` (GNOME2/MATE idiom: "Preferences" under the **Edit** menu)
+### 3.2b `gtk3_preferences.py` — `PreferencesDialog` (GTK3)
+The **view** for the settings model (§3.0a): the dialog that lets the user edit
+what `settings.py` stores. A modal `Gtk.Dialog` (GNOME2/MATE idiom: "Preferences" under the **Edit** menu)
 with a `Gtk.Notebook` of two tabs. **Fonts**: `Gtk.FontButton`s for editor font,
 code font, and markdown-preview font, plus two `Gtk.SpinButton`s for editor and
 preview line spacing (range `MIN_LINE_SPACING`..`MAX_LINE_SPACING`). **Interface**:
@@ -286,8 +317,38 @@ shared `Settings` in memory and calls the window's `on_apply` to re-theme), but 
 (reverting the live preview). The window calls `dialog.run_modal()` rather than
 just constructing it.
 
-### 3.3 `window.py` — `NotebookWindow` (view + controller)
-The editor area is now a `Gtk.Notebook` of `EditorTab` pages; `self._tabs` is a
+### 3.3 `gtk3_window.py` + mixins — `NotebookWindow` (GTK3 view + controller)
+`NotebookWindow` is composed from mixins via multiple inheritance to keep each
+file readable — at runtime it is a single class, so every method shares `self`
+and there is no behavioural difference from the former monolithic `window.py`:
+
+```
+class NotebookWindow(MenuBarMixin, ToolbarMixin, PanesMixin, ActionsMixin,
+                     Gtk.Window): ...
+```
+
+- `gtk3_window.py` — the core: `__init__`, `_build_ui` (assembles the panes),
+  icon-set install + session restore, the live font/spacing appliers, the
+  view-toggle state machine (read-only / preview / card view / outline) with its
+  menu↔toolbar sync, tab management, the status bar, `open_folder`, and the
+  recent-workspace menu.
+- `gtk3_menubar.py` (`MenuBarMixin`) — `_build_menubar`, `_icon_menu_item`.
+- `gtk3_toolbar.py` (`ToolbarMixin`) — `_build_toolbar`, `_toolbar_separator`,
+  `_toolbar_style_enum`, `_apply_toolbar_style`.
+- `gtk3_panes.py` (`PanesMixin`) — `_build_sidebar` / `_build_notelist` /
+  `_build_editor` / `_build_outline` / `_build_statusbar` and the reload /
+  cell-render / selection / outline-refresh helpers that bind panes 1, 2 and 4 to
+  `model`.
+- `gtk3_actions.py` (`ActionsMixin`) — the `on_*` handlers, the right-click and
+  tab context menus, move/locate, search, workspace open/close/refresh,
+  preferences/about, session save, and the shared confirm/error dialogs.
+
+When adding a method, put it in the mixin that owns its concern; avoid defining
+the same method name in two mixins (the MRO would silently shadow one). The order
+of mixins in the class statement is the MRO order, but since names don't collide
+it doesn't matter in practice.
+
+The editor area is a `Gtk.Notebook` of `EditorTab` pages; `self._tabs` is a
 list kept parallel to the notebook pages. Most editor operations delegate to the
 **active tab** via `_active_tab()`.
 
@@ -665,6 +726,11 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   selection-highlight background.
 - Initial keyboard focus is set to the sidebar (`set_focus(self.sidebar_view)`)
   so the first toolbar button doesn't show a focus ring on startup.
+- `NotebookWindow` is split across `gtk3_window.py` + four mixin files. They are
+  **one class** at runtime. Don't define a method name in two mixins (the MRO
+  silently keeps one). A method may freely call another defined in a different
+  mixin — they all resolve on `self`. Keep new methods in the mixin matching their
+  concern (menu/toolbar/panes/actions) or in the window core for lifecycle/state.
 
 ## 7. Suggested next features
 
@@ -685,11 +751,19 @@ UI is built in `_build_*` methods and assembled in `_build_ui()`:
   geometry is not.
 - Outline could highlight the heading nearest the cursor as you scroll/edit
   (currently it only jumps on click).
+- Experimental **GTK4 view** alongside the GTK3 one. The core modules (`config`,
+  `model`, `settings`, `pango_markdown`) are already GTK-free, so a parallel
+  `gtk4_*` module set could be written against them and selected at launch (e.g.
+  a `ui_toolkit` setting in `config.yml`, surfaced in Preferences). The entry
+  point would import `gtk4_window` vs `gtk3_window` based on that setting.
 
 ## 8. Testing
 
 There is no formal test suite yet, but the refactor makes the model layer
-testable without a display, since `config.py` and `model.py` import no GTK.
+testable without a display, since the core modules (`config.py`, `model.py`,
+`settings.py`, `pango_markdown.py`) import no GTK. The GTK3 view modules
+(`gtk3_*.py`) need GTK to import, but can be sanity-checked for composition (that
+`NotebookWindow` resolves all its mixin methods) with a stubbed `gi`.
 
 Syntax-check everything:
 

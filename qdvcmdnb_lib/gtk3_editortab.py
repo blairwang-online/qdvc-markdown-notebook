@@ -18,7 +18,7 @@ from gi.repository import Gtk, Pango, GLib  # noqa: E402
 
 from . import model
 from . import pango_markdown
-from .highlighter import MarkdownHighlighter
+from .gtk3_highlighter import MarkdownHighlighter
 
 UNTITLED_LABEL = "Untitled"
 MAX_TAB_TITLE = 12  # default characters before truncation (configurable in

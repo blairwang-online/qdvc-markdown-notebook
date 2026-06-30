@@ -10,7 +10,8 @@ Usage:
     python3 qdvc_markdown_notebook.py        # start empty, open folder via Ctrl+O
 
 This file is a thin entry point. Application logic lives in the qdvcmdnb_lib
-package (config, model, highlighter, window). See MAINTENANCE.md.
+package: GTK-free core modules (config, model, settings, pango_markdown) and the
+GTK3 view/controller modules (prefaced gtk3_). See MAINTENANCE.md.
 """
 
 import sys
@@ -20,7 +21,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GLib  # noqa: E402
 
-from qdvcmdnb_lib.window import NotebookWindow
+from qdvcmdnb_lib.gtk3_window import NotebookWindow
 
 
 def main():
